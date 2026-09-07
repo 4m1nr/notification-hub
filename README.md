@@ -123,7 +123,7 @@ sudo systemctl restart mail-watcher mattermost-watcher
 
 | Document | What it covers |
 |---|---|
-| [docs/setup.md](docs/setup.md) | Full walkthrough, in order, with the reasoning |
+| [docs/deploy.md](docs/deploy.md) | **Step-by-step VPS deployment runbook — start here** |
 | [docs/architecture.md](docs/architecture.md) | How the pieces fit and why |
 | [docs/ntfy-topics.md](docs/ntfy-topics.md) | Topics, tokens, subscribing the phone |
 | [docs/miniflux-android.md](docs/miniflux-android.md) | Managing feeds from Android |

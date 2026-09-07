@@ -7,6 +7,9 @@
 # way to break them.
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 require_root
+# Needed for SSH_PORT below; without it the check always compared against the
+# default 22 and would warn even when hub.env had the right port.
+load_env
 
 apt_ensure ufw
 

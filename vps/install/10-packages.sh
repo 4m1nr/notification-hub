@@ -13,6 +13,7 @@ apt_ensure \
   rsyslog rsyslog-gnutls \
   certbot \
   age \
+  socat \
   jq
 
 # Go toolchain — used to build our four services from source on the box, so the

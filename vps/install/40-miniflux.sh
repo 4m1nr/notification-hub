@@ -6,14 +6,30 @@ require_root
 load_env
 require_vars MINIFLUX_DOMAIN PG_MINIFLUX_PASSWORD
 
-MINIFLUX_VERSION="${MINIFLUX_VERSION:-2.2.15}"
+# Track the current release by default so a fresh install is not stuck on
+# whatever was newest when this was written. Pin MINIFLUX_VERSION in hub.env for
+# a reproducible build. FALLBACK is used only if GitHub cannot be reached.
+MINIFLUX_FALLBACK_VERSION="2.3.3"
+if [[ -z "${MINIFLUX_VERSION:-}" ]]; then
+  MINIFLUX_VERSION="$(curl -fsSL --max-time 20 \
+    https://api.github.com/repos/miniflux/v2/releases/latest 2>/dev/null \
+    | grep -oP '"tag_name":\s*"\K[^"]+' | head -n1)"
+  if [[ -n "$MINIFLUX_VERSION" ]]; then
+    log "latest miniflux release is $MINIFLUX_VERSION"
+  else
+    MINIFLUX_VERSION="$MINIFLUX_FALLBACK_VERSION"
+    warn "could not query GitHub; falling back to miniflux $MINIFLUX_VERSION"
+  fi
+fi
 
 if ! command -v miniflux >/dev/null; then
   arch="$(dpkg --print-architecture)"
   deb="/tmp/miniflux_${MINIFLUX_VERSION}_${arch}.deb"
   log "downloading miniflux ${MINIFLUX_VERSION}"
-  curl -fsSL -o "$deb" \
-    "https://github.com/miniflux/v2/releases/download/${MINIFLUX_VERSION}/miniflux_${MINIFLUX_VERSION}_${arch}.deb"
+  url="https://github.com/miniflux/v2/releases/download/${MINIFLUX_VERSION}/miniflux_${MINIFLUX_VERSION}_${arch}.deb"
+  curl -fsSL -o "$deb" "$url" \
+    || die "could not download $url
+  Check the version exists, or set MINIFLUX_VERSION in $HUB_ENV"
   DEBIAN_FRONTEND=noninteractive apt-get install -y "$deb"
   rm -f "$deb"
 fi

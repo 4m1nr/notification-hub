@@ -68,6 +68,7 @@ done
 
 printf '\n\033[1m===== done =====\033[0m\n' >&2
 log "next steps:"
+log "  0. docs/deploy.md              — the full runbook, if you are mid-deploy"
 log "  1. docs/ntfy-topics.md         — subscribe the phone"
 log "  2. docs/healthchecks-setup.md  — create the checks, then fill HC_PING_URL_* in $HUB_ENV"
 log "  3. docs/miniflux-android.md    — connect an Android reader"
