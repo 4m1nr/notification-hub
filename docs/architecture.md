@@ -68,24 +68,29 @@ would not work: the container's UID matches no host user.)
 changedetection.io is the exception. It has no SQL backend at all — its state is a
 JSON datastore on disk, bind-mounted at `/var/lib/changedetection`.
 
-## TLS: one port, two behaviours
+## TLS: one port, three behaviours
 
 ```
-:443  frontend tls_in  (TCP mode)
+:443  frontend tls_in  (TCP mode, inspects SNI)
         │
-        ├── SNI matches a tunnel domain ──▶ passthrough, untouched
+        ├── a passthrough domain ──▶ its own backend, handshake untouched
+        │                            (services that terminate their own TLS)
         │
-        └── everything else ──▶ abns@https ──▶ frontend https_in (TLS terminated)
+        ├── one of this hub's 4 domains ──▶ abns@https ──▶ frontend https_in
+        │                                                  (TLS terminated here)
+        │
+        └── anything else, or no SNI ──▶ be_reject ──▶ silent-drop
                                                  │
-                                                 ├── Host: ntfy.*    ──▶ :2586
-                                                 ├── Host: rss.*     ──▶ :8080
-                                                 ├── Host: watch.*   ──▶ :5000
-                                                 └── Host: checks.*  ──▶ :8000
+                                                 ├── Host: ntfy.*    ──▶ NTFY_PORT
+                                                 ├── Host: rss.*     ──▶ MINIFLUX_PORT
+                                                 ├── Host: watch.*   ──▶ CD_PORT
+                                                 └── Host: checks.*  ──▶ HC_PORT
 ```
 
-The separate tunnel service terminates its own TLS for its own domains, so those
-bytes must arrive untouched. Inspecting SNI before deciding is what lets one port
-serve both.
+Sharing :443 by SNI is what lets this stack sit on a VPS that already proxies
+other services: they keep terminating their own TLS, and only the four domains
+named in `hub.env` are decrypted here. Unknown names are dropped at the TCP
+layer, before a handshake is even attempted.
 
 Two configuration details that are load-bearing:
 
@@ -93,8 +98,11 @@ Two configuration details that are load-bearing:
   it and selects by SNI. A subdirectory in there is a startup error, which is why
   the per-domain split copies live in `/etc/certs/proxy/<domain>/` while the
   combined files go in `/etc/certs/proxy/combined/`.
-- **ntfy's backend has a 12-hour timeout.** The Android app holds a subscription
-  open indefinitely; the default 60 seconds would sever it every minute.
+- **ntfy's backend has a 12-hour timeout, and so does the client side.** The
+  Android app holds a subscription open indefinitely; the default 60 seconds
+  would sever it every minute. The TCP frontend needs a long `timeout client`
+  for the same reason, which is also what keeps passthrough tunnels alive.
+  Slow-header attacks stay bounded by `timeout http-request 10s`.
 
 ## Certificates: renew often, restart predictably
 
@@ -124,6 +132,11 @@ Three properties fall out of this split:
 
 The stock `certbot.timer` is disabled, because two schedulers racing to renew the
 same lineages is worse than either alone.
+
+Renewals never stop HAProxy. certbot's standalone authenticator binds
+`ACME_HTTP_PORT` and HAProxy forwards `/.well-known/acme-challenge/` to it, so
+:80 stays owned by the proxy throughout — important when other services depend
+on it staying up.
 
 Adding a domain is one line in `/etc/notification-hub/domains.map`.
 

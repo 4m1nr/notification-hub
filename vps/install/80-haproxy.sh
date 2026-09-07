@@ -8,6 +8,10 @@ require_vars NTFY_DOMAIN MINIFLUX_DOMAIN CD_DOMAIN HC_DOMAIN
 
 apt_ensure haproxy
 
+# Marker identifying a config this project generated, so an existing one written
+# by hand is recognisable and gets backed up rather than silently replaced.
+CONFIG_MARKER="Rendered from vps/haproxy/haproxy.cfg.tmpl"
+
 ensure_dir /etc/certs/proxy/combined 0750 root:haproxy
 
 # HAProxy refuses to start with an empty crt directory, which is the state on a
@@ -53,6 +57,17 @@ haproxy -c -f "$TMP_CFG" >/dev/null || { rm -f "$TMP_CFG"; die "rendered haproxy
 if [[ -f /etc/haproxy/haproxy.cfg ]] && cmp -s "$TMP_CFG" /etc/haproxy/haproxy.cfg; then
   log "haproxy config unchanged"
 else
+  # This host may already have been serving other things through HAProxy. Never
+  # replace a config that this project did not write without keeping a copy.
+  if [[ -f /etc/haproxy/haproxy.cfg ]] && ! grep -q "$CONFIG_MARKER" /etc/haproxy/haproxy.cfg; then
+    BACKUP="/etc/haproxy/haproxy.cfg.pre-notification-hub.$(date +%Y%m%d%H%M%S)"
+    cp -a /etc/haproxy/haproxy.cfg "$BACKUP"
+    warn "an existing, unmanaged haproxy.cfg was found and backed up to:"
+    warn "  $BACKUP"
+    warn "if it routed anything this config does not, merge those rules into"
+    warn "vps/haproxy/haproxy.cfg.tmpl and re-run — do not edit the live file,"
+    warn "it is regenerated on every run"
+  fi
   install -o root -g haproxy -m 0640 "$TMP_CFG" /etc/haproxy/haproxy.cfg
   log "wrote /etc/haproxy/haproxy.cfg"
 fi

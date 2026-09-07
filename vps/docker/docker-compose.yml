@@ -14,7 +14,7 @@ services:
     restart: unless-stopped
     # Loopback only: HAProxy is the single TLS terminator.
     ports:
-      - "127.0.0.1:5000:5000"
+      - "127.0.0.1:${CD_PORT}:5000"
     volumes:
       # A bind mount, not a named volume, so the backup job can read the
       # datastore as ordinary files without going through docker.
@@ -50,7 +50,7 @@ services:
     container_name: healthchecks
     restart: unless-stopped
     ports:
-      - "127.0.0.1:8000:8000"
+      - "127.0.0.1:${HC_PORT}:8000"
     volumes:
       # The host's PostgreSQL socket directory. This is how the container reaches
       # the shared native database without any TCP listener being opened.

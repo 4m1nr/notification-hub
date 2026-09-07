@@ -13,7 +13,8 @@ are.
 | 443 | HAProxy → healthchecks UI | anywhere | **HTTP basic auth at the proxy** + Django login |
 | 443 | HAProxy → healthchecks `/ping/` | anywhere | the ping UUID itself |
 | 80 | HAProxy | anywhere | redirect to 443; ACME challenge only |
-| 22 | sshd | anywhere | your existing SSH config |
+| 22 | sshd | anywhere | your existing SSH config and jails |
+| 443 | HAProxy → TLS passthrough | anywhere | handled by the backend service itself |
 | 6514 | rsyslog | **127.0.0.1 only** | n/a — nothing external can connect |
 | 5432 | PostgreSQL | **unix socket only** | scram-sha-256, per-database roles |
 
@@ -110,11 +111,14 @@ they cost a TLS handshake.
 
 | Jail | Watches | Trigger |
 |---|---|---|
-| `sshd` | journal | 4 failures in 10 min |
 | `nh-haproxy-auth` | `/var/log/haproxy.log` | 15 × 401/403 in 10 min |
 | `nh-haproxy-abuse` | `/var/log/haproxy.log` | 30 × 429/421 in 10 min |
 
-All three escalate: each repeat offence multiplies the ban by four, up to a week.
+Both escalate: each repeat offence multiplies the ban by four, up to a week.
+
+There is intentionally no `sshd` jail here — if you already run one it is yours
+to configure, and the installer reports whether one is active rather than
+imposing its own.
 
 Watching HAProxy rather than each application is deliberate — the log format is
 one *we* define, so the regex cannot silently stop matching because an upstream
@@ -130,9 +134,38 @@ none.
 
 ### 4. ufw
 
-Default-deny inbound. Only 22, 80 and 443 are open, and SSH is additionally
-rate-limited by ufw itself (more than 6 connections in 30 seconds is dropped),
-which blunts a burst before fail2ban has even parsed the log.
+**This project does not reshape your firewall.** `15-firewall.sh` adds allow
+rules for 80 and 443 — the only ports this stack needs — and reports on
+everything else. It never changes the default policy, never enables or disables
+ufw, and never deletes a rule, because this host runs other services and
+silently rewriting its firewall is a good way to break them.
+
+The recommended hardening is printed rather than applied:
+
+```bash
+sudo /opt/notification-hub/bin/firewall.sh --dry-run   # see exactly what it would do
+sudo /opt/notification-hub/bin/firewall.sh --harden    # apply it deliberately
+```
+
+`--harden` sets the default incoming policy to deny, rate-limits SSH, and adds
+explicit denies for 6514 and 5432. Read each against your other services first —
+in particular, default-deny will cut off anything that lacks an explicit allow
+rule.
+
+## Coexisting with what is already on the box
+
+This stack is designed to be installed onto a VPS that already runs other
+things, so every step that touches shared state is additive:
+
+| Shared thing | How it is handled |
+|---|---|
+| **ufw** | Adds 80/443 only. Never changes defaults, never enables, never deletes. |
+| **fail2ban** | Adds `nh-*` filters and jails only. **No `[DEFAULT]` section** — one there would rewrite the behaviour of every existing jail. **No `[sshd]` jail** — yours is reported, not replaced. Reloads rather than restarts, so current bans survive. |
+| **HAProxy** | An existing config not written by this project is backed up to `haproxy.cfg.pre-notification-hub.<timestamp>` before being replaced, with a warning telling you to merge anything it routed into the template. |
+| **Ports** | `05-preflight.sh` refuses to install if anything already holds a port the stack wants, naming the process. Every internal port is configurable in `hub.env`. |
+| **HAProxy's log** | If the haproxy package already ships an rsyslog rule or logrotate entry for `/var/log/haproxy.log`, those are used as-is rather than a competing one being installed. |
+| **:443** | Shared by SNI. Passthrough domains reach their own backends untouched; only this project's four domains are TLS-terminated. |
+| **:80** | Stays owned by HAProxy permanently — certbot renews on `ACME_HTTP_PORT` behind it, so renewals never stop the proxy and never interrupt other services. |
 
 ## Credential handling
 

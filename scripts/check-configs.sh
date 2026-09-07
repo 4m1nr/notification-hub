@@ -19,12 +19,29 @@ trap 'rm -rf "$WORK"' EXIT
 render() {
   local src="$1" fmt
   fmt="$(grep -oE '\$\{[A-Za-z_][A-Za-z0-9_]*\}' "$src" | sort -u | tr '\n' ' ')"
+
+  # envsubst replaces a listed-but-unset variable with an empty string rather
+  # than leaving ${NAME} behind, so checking the output for leftovers finds
+  # nothing. The only reliable check is whether each name is defined at all.
+  # "defined but empty" is deliberate for some settings, so test for definition
+  # rather than for a value.
+  local name missing=()
+  for name in $(grep -oE '\$\{[A-Za-z_][A-Za-z0-9_]*\}' "$src" | tr -d '${}' | sort -u); do
+    [[ -n "${!name+defined}" ]] || missing+=("$name")
+  done
+  if (( ${#missing[@]} )); then
+    echo "variables referenced by $src but never set:" >&2
+    printf '    %s\n' "${missing[@]}" >&2
+    return 1
+  fi
   envsubst "$fmt" < "$src"
 }
 
 export NTFY_DOMAIN=ntfy.example.com MINIFLUX_DOMAIN=rss.example.com
 export CD_DOMAIN=watch.example.com HC_DOMAIN=checks.example.com
 export SYSLOG_SEVERITY_MAX=4 SYSLOG_TLS_PORT=6514
+export ACME_HTTP_PORT=8402
+export NTFY_PORT=2586 MINIFLUX_PORT=8080 CD_PORT=5000 HC_PORT=8000
 
 fail=0
 

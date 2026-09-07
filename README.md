@@ -12,12 +12,13 @@ do not control, and the phone talks to exactly one endpoint.
 ```
 ┌───────────────────────── VPS (Ubuntu 26.04, public) ─────────────────────────┐
 │                                                                              │
-│   ufw: only 22/80/443 inbound · fail2ban bans repeat offenders                │
-│   HAProxy :443  ── SNI ──┬─ TLS passthrough ──▶ (your separate tunnel svc)    │
-│                          └─ terminate ──┬──▶ ntfy            127.0.0.1:2586  │
-│                                         ├──▶ Miniflux        127.0.0.1:8080  │
-│                                         ├──▶ changedetection 127.0.0.1:5000  │
-│                                         └──▶ healthchecks    127.0.0.1:8000  │
+│   fail2ban bans repeat offenders · ufw rules added, never rewritten           │
+│   HAProxy :443 ── SNI ──┬─ passthrough ──▶ other services already on this box │
+│                         ├─ unknown name ──▶ silent-drop                       │
+│                         └─ terminate ──┬──▶ ntfy            127.0.0.1:2586   │
+│                                        ├──▶ Miniflux        127.0.0.1:8080   │
+│                                        ├──▶ changedetection 127.0.0.1:5000   │
+│                                        └──▶ healthchecks    127.0.0.1:8000   │
 │                                                                              │
 │   PostgreSQL (unix socket only) ── ntfy · miniflux · healthchecks databases   │
 │                                                                              │
@@ -53,6 +54,12 @@ database. Nothing listens on TCP; the container reaches the database through a
 bind-mounted unix socket. (changedetection.io is the exception — it has no SQL
 backend at all and keeps a JSON datastore on disk.)
 
+**It shares the box.** :443 is split by SNI, so services already proxied here
+keep terminating their own TLS and only this project's four domains are
+decrypted. Existing ufw rules, fail2ban jails and HAProxy configs are added to or
+backed up, never rewritten — and `05-preflight.sh` refuses to install if
+something already holds a port it wants. Every internal port is configurable.
+
 **Nothing accepts anonymous input.** The syslog collector binds `127.0.0.1`, so
 no one else can send you logs at all — rsyslog cannot authenticate remote senders
 over TLS without client certificates, and a public-CA `certvalid` check would
@@ -83,10 +90,12 @@ sudo install -m 0600 .env.example /etc/notification-hub/hub.env
 sudo "${EDITOR:-vi}" /etc/notification-hub/hub.env   # domains, ACME email
 
 # DNS for each domain must already point at this VPS.
-sudo ./bootstrap.sh 10-packages.sh 15-firewall.sh 20-postgres.sh 30-ntfy.sh \
-                    40-miniflux.sh 50-go-services.sh
+sudo ./bootstrap.sh 05-preflight.sh 10-packages.sh 15-firewall.sh 20-postgres.sh \
+                    30-ntfy.sh 40-miniflux.sh 50-go-services.sh
 
 # Issue certificates, then let the distribution script place them.
+# This first issuance needs :80 free, so run it before HAProxy starts. Renewals
+# afterwards go through HAProxy and never stop it.
 sudo ./bootstrap.sh 70-certs.sh
 sudo "${EDITOR:-vi}" /etc/notification-hub/domains.map   # uncomment your domains
 sudo certbot certonly --standalone -d ntfy.example.com --email you@example.com --agree-tos

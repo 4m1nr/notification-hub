@@ -3,10 +3,12 @@
 #
 # Rendered from vps/haproxy/haproxy.cfg.tmpl. Two substitution styles are used
 # here on purpose:
-#   ${VAR}     expanded by envsubst from hub.env
-#   @@NAME@@   substituted by sed in 80-haproxy.sh
+#   dollar-brace NAME   expanded by envsubst from hub.env
+#   @@NAME@@            substituted by 80-haproxy.sh after envsubst has run
 # The password hash uses the @@ form because crypt hashes contain '$' characters
 # that envsubst would mangle into empty variable expansions.
+# (This comment avoids writing the brace form literally, because the renderer
+# scans for it to check every referenced variable is actually defined.)
 
 global
     log /dev/log local0
@@ -16,6 +18,7 @@ global
     user haproxy
     group haproxy
     daemon
+    maxconn 4096
 
     # Modern defaults. HAProxy issues nothing itself — every certificate here is
     # placed by distribute-certs.sh and applied by apply-pending-restarts.sh.
@@ -31,6 +34,8 @@ defaults
     timeout connect 5s
     timeout client  60s
     timeout server  60s
+    # Long-lived streams (the passthrough tunnels, and ntfy's subscription) set
+    # their own timeouts below; these defaults only bound ordinary HTTP.
     # Bounds slowloris: a client that opens a connection and dribbles headers is
     # cut off rather than occupying a slot indefinitely.
     timeout http-request 10s
@@ -67,47 +72,74 @@ backend st_logins
     stick-table type ipv6 size 1m expire 1h store http_req_rate(5m)
 
 #-----------------------------------------------------------------------------
-# :443 in TCP mode.
+# :443 in TCP mode — the SNI switchboard.
 #
-# The tunnel service terminates its own TLS for its own domains, so those
-# connections must reach it untouched. Everything else is handed to the internal
-# HTTPS frontend below over an abstract socket, where we do terminate TLS.
-# Inspecting SNI is what lets one port serve both.
+# Three destinations:
+#   * passthrough domains, which terminate their own TLS and must receive the
+#     handshake untouched
+#   * this hub's domains, handed to the internal HTTPS frontend where we do
+#     terminate TLS
+#   * everything else, silently dropped
+#
+# Silent-drop rather than reject is deliberate: a scanner hitting the bare IP,
+# or asking for a domain that is not served here, learns nothing and burns its
+# own connection timeout. Connections without SNI land here too.
 #-----------------------------------------------------------------------------
 frontend tls_in
     bind *:443
     mode tcp
     option tcplog
+    # These are tunnels, not requests. A 60s inactivity timeout would cut a
+    # passthrough session (and ntfy's long-lived subscription) mid-stream.
+    timeout client 1h
     tcp-request inspect-delay 5s
     tcp-request content accept if { req.ssl_hello_type 1 }
 
-    # Uncomment and list the tunnel's domains to pass them through untouched.
-    #acl is_tunnel req.ssl_sni -i -f /etc/haproxy/tunnel-domains.acl
-    #use_backend tunnel_passthrough if is_tunnel
+    # --- TLS passthrough: add one use_backend line per domain here ---
+    use_backend be_passthrough_a if { req.ssl_sni -i passthrough-a.example.com }
+    use_backend be_passthrough_b      if { req.ssl_sni -i passthrough-b.example.com }
 
-    default_backend terminate_tls
+    # --- Hub services: we terminate TLS for these ---
+    acl sni_hub req.ssl_sni -i ${NTFY_DOMAIN} ${MINIFLUX_DOMAIN} ${CD_DOMAIN} ${HC_DOMAIN}
+    use_backend terminate_tls if sni_hub
+
+    default_backend be_reject
+
+# --- TLS passthrough: add one backend block per domain here ---
+backend be_passthrough_a
+    mode tcp
+    timeout server 1h
+    server srv1 127.0.0.1:441
+
+backend be_passthrough_b
+    mode tcp
+    timeout server 1h
+    server srv2 127.0.0.1:440
 
 backend terminate_tls
     mode tcp
+    timeout server 1h
     server local_https abns@https send-proxy-v2
 
-#backend tunnel_passthrough
-#    mode tcp
-#    server tunnel 127.0.0.1:8443
+backend be_reject
+    mode tcp
+    tcp-request content silent-drop
 
 #-----------------------------------------------------------------------------
 # Plain HTTP: redirect to HTTPS, and keep the ACME challenge path working.
 #-----------------------------------------------------------------------------
 frontend http_in
     bind *:80
-    # certbot --standalone binds :80 itself while HAProxy is stopped, so this is
-    # only for renewals performed with the webroot plugin.
+    # Renewals must not require stopping HAProxy — doing so would drop the
+    # passthrough tunnels above as well. certbot runs standalone on
+    # ACME_HTTP_PORT instead, and this forwards the challenge to it, so :80 stays
+    # owned by HAProxy the whole time.
     acl acme_challenge path_beg /.well-known/acme-challenge/
     http-request redirect scheme https code 301 unless acme_challenge
     use_backend be_acme if acme_challenge
 
 backend be_acme
-    server acme 127.0.0.1:8402
+    server acme 127.0.0.1:${ACME_HTTP_PORT}
 
 #-----------------------------------------------------------------------------
 # TLS termination, abuse control, and host-based routing.
@@ -119,6 +151,12 @@ backend be_acme
 #-----------------------------------------------------------------------------
 frontend https_in
     bind abns@https accept-proxy ssl crt /etc/certs/proxy/combined/ alpn h2,http/1.1
+
+    # ntfy holds a response stream open indefinitely, and 'timeout client' is
+    # what governs the client side of it. Slow-header attacks are still bounded
+    # by 'timeout http-request 10s' and idle keep-alives by 'timeout
+    # http-keep-alive 15s', both inherited from defaults.
+    timeout client 12h
 
     http-request set-header X-Forwarded-Proto https
     http-request set-header X-Forwarded-For %[src]
@@ -191,13 +229,13 @@ backend be_ntfy
     timeout server 12h
     timeout tunnel 12h
     option http-server-close
-    server ntfy 127.0.0.1:2586 check
+    server ntfy 127.0.0.1:${NTFY_PORT} check
 
 backend be_rss
-    server miniflux 127.0.0.1:8080 check
+    server miniflux 127.0.0.1:${MINIFLUX_PORT} check
 
 backend be_watch
-    server changedetection 127.0.0.1:5000 check
+    server changedetection 127.0.0.1:${CD_PORT} check
 
 backend be_checks
-    server healthchecks 127.0.0.1:8000 check
+    server healthchecks 127.0.0.1:${HC_PORT} check

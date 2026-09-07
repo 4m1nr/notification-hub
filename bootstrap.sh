@@ -11,6 +11,7 @@ source vps/install/lib.sh
 require_root
 
 STEPS=(
+  05-preflight.sh
   10-packages.sh
   15-firewall.sh
   20-postgres.sh

@@ -16,6 +16,12 @@ LE_LIVE="${LE_LIVE:-/etc/letsencrypt/live}"
 # Days before expiry at which we force a renewal.
 THRESHOLD_DAYS="${CERT_RENEW_THRESHOLD_DAYS:-3}"
 
+# certbot's standalone authenticator binds this port instead of 80, and HAProxy
+# forwards /.well-known/acme-challenge/ to it. That is what lets a renewal
+# happen without stopping the proxy — which would also drop every other service
+# behind it.
+ACME_HTTP_PORT="${ACME_HTTP_PORT:-8402}"
+
 DRY_RUN=0
 [[ "${1:-}" == "--dry-run" ]] && DRY_RUN=1
 
@@ -58,7 +64,8 @@ while read -r domain _dest _owner _format _service _rest; do
 
   # --force-renewal because certbot would otherwise decline: by its own 30-day
   # rule the certificate is not due, but by ours it is.
-  if certbot renew --cert-name "$domain" --force-renewal --non-interactive --quiet; then
+  if certbot renew --cert-name "$domain" --force-renewal --non-interactive --quiet \
+       --http-01-port "$ACME_HTTP_PORT"; then
     log "$domain: renewed"
     renewed_any=1
   else

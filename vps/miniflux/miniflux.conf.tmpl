@@ -3,7 +3,7 @@
 
 # Miniflux is managed from the phone, so it is a public vhost. HAProxy terminates
 # TLS in front of it; Miniflux itself never leaves loopback.
-LISTEN_ADDR=127.0.0.1:8080
+LISTEN_ADDR=127.0.0.1:${MINIFLUX_PORT}
 BASE_URL=https://${MINIFLUX_DOMAIN}/
 
 # Tells Miniflux it is served over TLS so session cookies get Secure/SameSite.

@@ -89,17 +89,24 @@ render() {
   local shell_format
   shell_format="$(grep -oE '\$\{[A-Za-z_][A-Za-z0-9_]*\}' "$src" | sort -u | tr '\n' ' ')"
 
+  # envsubst replaces a listed-but-unset variable with an empty string rather
+  # than leaving ${NAME} behind, so checking the output for leftovers finds
+  # nothing. The only reliable check is whether each name is defined at all.
+  # "defined but empty" is deliberate for some settings, so test for definition
+  # rather than for a value.
+  local name missing=()
+  for name in $(grep -oE '\$\{[A-Za-z_][A-Za-z0-9_]*\}' "$src" | tr -d '${}' | sort -u); do
+    [[ -n "${!name+defined}" ]] || missing+=("$name")
+  done
+  if (( ${#missing[@]} )); then
+    warn "variables referenced by $src but never set:"
+    printf '    %s\n' "${missing[@]}" >&2
+    die "refusing to install a template with undefined variables (they would render as empty)"
+  fi
+
   local tmp
   tmp="$(mktemp)"
   envsubst "$shell_format" < "$src" > "$tmp"
-
-  # A leftover ${...} means a variable was referenced but never set.
-  if grep -qE '\$\{[A-Za-z_][A-Za-z0-9_]*\}' "$tmp"; then
-    warn "unset variables in $src:"
-    grep -ohE '\$\{[A-Za-z_][A-Za-z0-9_]*\}' "$tmp" | sort -u | sed 's/^/    /' >&2
-    rm -f "$tmp"
-    die "refusing to install a template with unresolved variables"
-  fi
 
   if [[ -f "$dest" ]] && cmp -s "$tmp" "$dest"; then
     rm -f "$tmp"

@@ -5,7 +5,7 @@ base-url: "https://${NTFY_DOMAIN}"
 
 # HAProxy terminates TLS and is the only thing that talks to ntfy, so bind to
 # loopback and trust the proxy's forwarded client address for rate limiting.
-listen-http: "127.0.0.1:2586"
+listen-http: "127.0.0.1:${NTFY_PORT}"
 behind-proxy: true
 
 # All state lives in the shared PostgreSQL instance: message cache, access

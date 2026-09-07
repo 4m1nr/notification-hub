@@ -16,6 +16,13 @@ Order matters here. Each section explains why it comes where it does.
 
 ## 1. Configuration
 
+If this VPS already runs other services, read
+[security.md § Coexisting with what is already on the box](security.md) first.
+The short version: nothing here rewrites your ufw policy, your fail2ban jails, or
+a HAProxy config it did not write, and the install refuses to start if a port it
+wants is taken.
+
+
 ```bash
 git clone <this repo> && cd Notification-Hub
 
@@ -49,9 +56,13 @@ the SSH port looks wrong, because enabling ufw with the wrong one locks you out
 of a remote VPS permanently.
 
 ```bash
-sudo ./bootstrap.sh 10-packages.sh 15-firewall.sh 20-postgres.sh \
+sudo ./bootstrap.sh 05-preflight.sh 10-packages.sh 15-firewall.sh 20-postgres.sh \
                     30-ntfy.sh 40-miniflux.sh 50-go-services.sh
 ```
+
+`05-preflight.sh` stops before anything is installed if another process already
+holds a port the stack wants, and names it. If so, change the matching
+`*_PORT` in `hub.env` — they are all loopback-only and free to move — and re-run.
 
 This installs packages and Docker, provisions the three PostgreSQL databases with
 generated passwords, installs ntfy and creates its users and per-source tokens,
@@ -92,8 +103,10 @@ rss.example.com     /etc/certs/proxy/rss      root:haproxy   both    haproxy
 The syslog collector is not in this table: it uses a self-signed certificate on
 a loopback socket, so there is nothing for a public CA to attest.
 
-Now issue them. Port 80 must be free — HAProxy is not running yet, which is
-exactly why this step comes before it:
+Now issue them. This first issuance needs port 80 free, and HAProxy is not
+running yet — which is exactly why this step comes before it. Subsequent renewals
+do *not* stop HAProxy: certbot binds `ACME_HTTP_PORT` and HAProxy forwards the
+challenge to it, so other services behind the proxy are never interrupted.
 
 ```bash
 sudo certbot certonly --standalone --agree-tos --email you@example.com \
@@ -108,6 +121,13 @@ check `/var/lib/notification-hub/pending-restart/`. That is the intended
 behaviour; see [architecture.md](architecture.md).
 
 ## 5. HAProxy — the point where things become reachable
+
+If this box already has a HAProxy config, it is backed up to
+`/etc/haproxy/haproxy.cfg.pre-notification-hub.<timestamp>` before being
+replaced, and you will be told. Anything it routed that the template does not —
+TLS passthrough for other domains, for instance — must be merged into
+`vps/haproxy/haproxy.cfg.tmpl` and re-run. Do not edit the live file; it is
+regenerated every time.
 
 ```bash
 sudo ./bootstrap.sh 80-haproxy.sh
@@ -162,6 +182,11 @@ sudo ./bootstrap.sh 60-syslog.sh 85-fail2ban.sh
 logger -p user.warning "hub test warning"     # should notify
 logger -p user.info    "hub test info"        # should NOT notify
 ```
+
+fail2ban jails are added alongside any you already run: the drop-in defines only
+`nh-*` jails, carries no `[DEFAULT]` section (which would rewrite every existing
+jail) and no `[sshd]` jail, and reloads rather than restarts so current bans
+survive.
 
 The collector binds `127.0.0.1`, so it takes logs from this machine only —
 nobody else can send you alerts. `85-fail2ban.sh` verifies its filters against
