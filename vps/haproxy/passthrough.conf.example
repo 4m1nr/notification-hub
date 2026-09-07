@@ -6,7 +6,17 @@
 #
 # One line per domain:
 #
-#   <sni-hostname>    <backend-target>
+#   <sni-hostname>    <backend-target>    [options]
+#
+# Options (optional third column):
+#
+#   proxy-protocol      Send PROXY protocol v2 to the backend, so it can see the
+#                       real client IP instead of HAProxy's. In TCP mode HAProxy
+#                       opens a new connection to the backend, so without this
+#                       the backend sees 127.0.0.1 for every request.
+#                       The backend MUST be configured to accept it — and once
+#                       it is, connecting to it directly stops working.
+#   proxy-protocol-v1   The older text format, for backends that only speak v1.
 #
 # Connections whose TLS SNI matches the hostname are handed to the target with
 # the handshake untouched, so that service keeps terminating its own TLS. The
@@ -19,6 +29,7 @@
 # which regenerates HAProxy's map and backend files, validates the result, and
 # reloads with no dropped connections.
 
-# domain                     target
+# domain                     target                  options
 #servenet.example.com        127.0.0.1:441
 #mooz.example.com            127.0.0.1:440
+#node.example.com            127.0.0.1:442           proxy-protocol

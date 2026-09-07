@@ -37,7 +37,11 @@ usage() {
 usage: $0 <command> [args]
 
   list                       Show the configured passthrough domains
-  add <domain> <host:port>   Add a domain and apply
+  add <domain> <host:port> [proxy-protocol]
+                             Add a domain and apply. Pass 'proxy-protocol' if
+                             the backend needs the real client IP and is
+                             configured to accept PROXY protocol (v2).
+                             Use 'proxy-protocol-v1' for the text format.
   remove <domain>            Remove a domain and apply
   sync                       Regenerate, validate and reload after editing
                              $TABLE by hand
@@ -60,23 +64,28 @@ ensure_table() {
   fi
 }
 
-# read_table emits "domain<TAB>target" for each active line.
+# read_table emits "domain<TAB>target<TAB>options" for each active line.
 read_table() {
   ensure_table
-  local domain target rest
-  while read -r domain target rest; do
+  local domain target options
+  while read -r domain target options; do
     [[ -z "${domain:-}" || "${domain:0:1}" == "#" ]] && continue
     [[ -n "${target:-}" ]] || die "line for '$domain' in $TABLE has no target"
     [[ "$target" == *:* ]] || die "target for '$domain' must be host:port, got '$target'"
-    printf '%s\t%s\n' "$domain" "$target"
+    case "${options:-}" in
+      ""|proxy-protocol|proxy-protocol-v1) ;;
+      *) die "unknown option '$options' for '$domain' in $TABLE
+  valid: proxy-protocol, proxy-protocol-v1" ;;
+    esac
+    printf '%s\t%s\t%s\n' "$domain" "$target" "${options:-}"
   done < "$TABLE"
 }
 
 cmd_list() {
   [[ -f "$TABLE" ]] || { log "no routing table at $TABLE — nothing configured"; return 0; }
   local any=0
-  printf '%-36s %s\n' "DOMAIN" "TARGET" >&2
-  while IFS=$'\t' read -r domain target; do
+  printf '%-32s %-22s %s\n' "DOMAIN" "TARGET" "OPTIONS" >&2
+  while IFS=$'\t' read -r domain target options; do
     any=1
     # Flag a target with nothing behind it: the domain would resolve, connect,
     # and then fail in a way that looks like a proxy fault rather than a
@@ -84,7 +93,7 @@ cmd_list() {
     local state=""
     ss -ltnH 2>/dev/null | awk '{print $4}' | grep -qE "[:.]${target##*:}\$" \
       || state="<- nothing listening"
-    printf '%-36s %s %s\n' "$domain" "$target" "$state" >&2
+    printf '%-32s %-22s %s %s\n' "$domain" "$target" "${options:-–}" "$state" >&2
   done < <(read_table)
   (( any )) || log "no passthrough domains configured"
 }
@@ -105,16 +114,27 @@ generate() {
     echo
   } > "$tmp_cfg"
 
-  local domain target be
-  while IFS=$'\t' read -r domain target; do
+  local domain target options be server_opts
+  while IFS=$'\t' read -r domain target options; do
     be="$(backend_name "$domain")"
     printf '%s %s\n' "$domain" "$be" >> "$tmp_map"
+
+    # In TCP mode HAProxy opens a NEW connection to the backend, so the backend
+    # sees HAProxy's address as the source. PROXY protocol prepends the original
+    # client address to the stream, before the TLS handshake, so the backend can
+    # recover it. The backend must be configured to expect it.
+    server_opts=""
+    case "$options" in
+      proxy-protocol)    server_opts=" send-proxy-v2" ;;
+      proxy-protocol-v1) server_opts=" send-proxy" ;;
+    esac
+
     {
       printf 'backend %s\n' "$be"
       printf '    mode tcp\n'
       # These are tunnels, not requests; the default 60s would cut them.
       printf '    timeout server 1h\n'
-      printf '    server target %s\n\n' "$target"
+      printf '    server target %s%s\n\n' "$target" "$server_opts"
     } >> "$tmp_cfg"
     count=$((count + 1))
   done < <(read_table)
@@ -147,16 +167,26 @@ validate_and_reload() {
 cmd_sync() { generate; validate_and_reload; }
 
 cmd_add() {
-  local domain="${1:-}" target="${2:-}"
-  [[ -n "$domain" && -n "$target" ]] || die "usage: $0 add <domain> <host:port>"
+  local domain="${1:-}" target="${2:-}" options="${3:-}"
+  [[ -n "$domain" && -n "$target" ]] || die "usage: $0 add <domain> <host:port> [proxy-protocol]"
   [[ "$target" == *:* ]] || die "target must be host:port, e.g. 127.0.0.1:441"
+  case "$options" in
+    ""|proxy-protocol|proxy-protocol-v1) ;;
+    *) die "unknown option '$options' — valid: proxy-protocol, proxy-protocol-v1" ;;
+  esac
   ensure_table
 
   if read_table | cut -f1 | grep -qxF "$domain"; then
     die "'$domain' is already in $TABLE — remove it first, or edit the file"
   fi
-  printf '%-28s %s\n' "$domain" "$target" >> "$TABLE"
-  log "added $domain -> $target"
+  printf '%-28s %-22s %s\n' "$domain" "$target" "$options" >> "$TABLE"
+  log "added $domain -> $target${options:+ ($options)}"
+  if [[ -n "$options" ]]; then
+    log ""
+    log "PROXY protocol is now sent to this backend. The backend MUST be"
+    log "configured to accept it, or every connection will fail — and once it"
+    log "does, connecting to it directly (bypassing HAProxy) will also fail."
+  fi
   cmd_sync
 }
 

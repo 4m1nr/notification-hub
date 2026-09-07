@@ -85,6 +85,89 @@ decrypted, so the backend service presents its own. Do not add them to
 `/etc/notification-hub/domains.map`; that table is only for domains this proxy
 terminates.
 
+## The backend sees HAProxy's IP, not the client's
+
+This surprises everyone once. A service that correctly logs client addresses when
+reached directly will log `127.0.0.1` for everything once it is behind the proxy.
+
+**Why.** In TCP mode HAProxy is not forwarding packets — it accepts the client's
+connection and opens a **second, independent** TCP connection to the backend. The
+kernel stamps that new connection with HAProxy's own source address, because
+HAProxy is genuinely the one making it. The client's address exists only in
+HAProxy's memory. When the client connects directly, the service's
+`getpeername()` returns the real address because there is only one connection.
+
+In HTTP mode you would solve this by injecting an `X-Forwarded-For` header. That
+is not available here: with TLS passthrough HAProxy never decrypts the stream, so
+there is no header to add — the payload is opaque bytes it must not touch.
+
+**The fix is PROXY protocol.** HAProxy prepends a small header to the TCP stream,
+*before* the TLS handshake, carrying the original source and destination
+address and port. Both ends have to agree it is there.
+
+```bash
+sudo /opt/notification-hub/bin/passthrough.sh add node.example.com 127.0.0.1:442 proxy-protocol
+```
+
+That emits `send-proxy-v2` on the backend's server line. Use
+`proxy-protocol-v1` for backends that only speak the older text format.
+
+> **Once enabled, the backend requires it.** A backend configured to accept PROXY
+> protocol will reject any connection that arrives without the header — so
+> connecting to that port directly, bypassing HAProxy, stops working. That is
+> expected, and it is also a useful property: the backend can no longer be
+> reached except through the proxy.
+
+### Configuring the backend
+
+The backend must be told to expect the header. For **Xray-core** (which is what
+PasarGuard node and similar projects run), it goes in the inbound's
+`streamSettings`, under the block for whichever transport that inbound uses:
+
+```jsonc
+// network: "tcp"
+"streamSettings": {
+  "network": "tcp",
+  "tcpSettings": { "acceptProxyProtocol": true }
+}
+
+// network: "ws"
+"streamSettings": {
+  "network": "ws",
+  "wsSettings": { "acceptProxyProtocol": true, "path": "/..." }
+}
+
+// network: "httpupgrade"
+"streamSettings": {
+  "network": "httpupgrade",
+  "httpupgradeSettings": { "acceptProxyProtocol": true, "path": "/..." }
+}
+```
+
+Set it on the **inbound only**, and on the transport that inbound actually uses —
+putting it in `tcpSettings` when the inbound is WebSocket does nothing. Xray
+accepts both v1 and v2, so either option above works.
+
+Other common backends: nginx `listen ... proxy_protocol` plus
+`set_real_ip_from`/`real_ip_header proxy_protocol`; Caddy needs a plugin;
+sing-box uses `"proxy_protocol": true` on the inbound.
+
+### Checking it worked
+
+```bash
+# The generated backend should carry send-proxy-v2
+grep -A3 "$(sudo /opt/notification-hub/bin/passthrough.sh list 2>&1 | awk '/proxy-protocol/{print $1}' | head -1)" \
+  /etc/haproxy/conf.d/10-passthrough.cfg
+
+# Watch the backend's own logs while making a request from a known address.
+# Before: every connection shows 127.0.0.1. After: your real address.
+```
+
+If connections start failing outright after enabling it, the backend is not
+actually accepting PROXY protocol — it is reading the header as if it were the
+first bytes of a TLS handshake, and closing. Re-check that the setting is on the
+right transport block for that inbound.
+
 ## Things worth knowing
 
 - **Long timeouts are deliberate.** The TCP frontend uses `timeout client 1h` and

@@ -272,7 +272,18 @@ repository, so a `git pull` can never overwrite your routing. Each `add`
 validates the whole configuration and reloads — a reload, so existing sessions
 survive — and refuses to apply anything that does not validate.
 
-`list` flags a target with nothing listening behind it. Full detail in
+`list` flags a target with nothing listening behind it.
+
+**If the backend needs to see real client IPs**, add `proxy-protocol` as a third
+argument. In TCP mode HAProxy opens a new connection to the backend, so without
+it the backend logs `127.0.0.1` for every request:
+
+```bash
+sudo /opt/notification-hub/bin/passthrough.sh add node.example.com 127.0.0.1:442 proxy-protocol
+```
+
+The backend must be configured to accept it — and once it is, connecting to that
+port directly stops working. Full detail, including the Xray-core settings, in
 [tls-passthrough.md](tls-passthrough.md).
 
 ---

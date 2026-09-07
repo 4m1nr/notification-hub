@@ -59,7 +59,8 @@ render vps/haproxy/haproxy.cfg.tmpl > "$WORK/haproxy.cfg"
 # the generated backends live outside the main config, so a config that parses
 # on its own can still be broken once they are loaded alongside it.
 mkdir -p "$WORK/conf.d"
-printf 'sample.example.com  127.0.0.1:9441\n' > "$WORK/passthrough.conf"
+{ printf 'sample.example.com  127.0.0.1:9441\n'
+  printf 'proxied.example.com 127.0.0.1:9442  proxy-protocol\n'; } > "$WORK/passthrough.conf"
 PASSTHROUGH_TABLE="$WORK/passthrough.conf" PASSTHROUGH_MAP="$WORK/sni-passthrough.map" \
 HAPROXY_CONF_D="$WORK/conf.d" HAPROXY_MAIN_CFG=/nonexistent \
   ./vps/haproxy/passthrough.sh sync >/dev/null
@@ -85,6 +86,15 @@ if ! grep -q 'be_pt_sample_example_com' "$WORK/conf.d/10-passthrough.cfg" 2>/dev
   echo "    passthrough map and backends are out of step"; fail=1
 else
   echo "    passthrough map/backend names agree"
+fi
+
+# The proxy-protocol option must reach the server line, and must not leak onto
+# backends that did not ask for it.
+if grep -q 'server target 127.0.0.1:9442 send-proxy-v2' "$WORK/conf.d/10-passthrough.cfg" 2>/dev/null \
+   && grep -q 'server target 127.0.0.1:9441$' "$WORK/conf.d/10-passthrough.cfg" 2>/dev/null; then
+  echo "    proxy-protocol applied only where requested"
+else
+  echo "    proxy-protocol option did not render correctly"; fail=1
 fi
 
 echo "==> rsyslog"
