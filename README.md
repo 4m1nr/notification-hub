@@ -56,7 +56,9 @@ backend at all and keeps a JSON datastore on disk.)
 
 **It shares the box.** :443 is split by SNI, so services already proxied here
 keep terminating their own TLS and only this project's four domains are
-decrypted. Existing ufw rules, fail2ban jails and HAProxy configs are added to or
+decrypted. That routing table lives on the VPS, not in this repo, so adding a
+domain is `passthrough.sh add <domain> <host:port>` and a `git pull` can never
+overwrite it. Existing ufw rules, fail2ban jails and HAProxy configs are added to or
 backed up, never rewritten — and `05-preflight.sh` refuses to install if
 something already holds a port it wants. Every internal port is configurable.
 
@@ -128,6 +130,7 @@ sudo systemctl restart mail-watcher mattermost-watcher
 | [docs/healthchecks-setup.md](docs/healthchecks-setup.md) | Per-watcher checks and the ntfy integration |
 | [docs/changedetection-login.md](docs/changedetection-login.md) | Watching pages behind a login |
 | [docs/security.md](docs/security.md) | What's exposed, and every layer protecting it |
+| [docs/tls-passthrough.md](docs/tls-passthrough.md) | Sharing :443 with other services on the box |
 | [docs/backup-restore.md](docs/backup-restore.md) | Decrypting and restoring from Telegram |
 
 ## Development

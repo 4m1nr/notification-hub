@@ -95,9 +95,13 @@ frontend tls_in
     tcp-request inspect-delay 5s
     tcp-request content accept if { req.ssl_hello_type 1 }
 
-    # --- TLS passthrough: add one use_backend line per domain here ---
-    use_backend be_passthrough_a if { req.ssl_sni -i passthrough-a.example.com }
-    use_backend be_passthrough_b      if { req.ssl_sni -i passthrough-b.example.com }
+    # --- TLS passthrough ---
+    # The routing table lives in /etc/haproxy/passthrough.conf, outside this
+    # repository, because the hostnames and internal ports in it are yours.
+    # passthrough.sh generates the map read here and the backends in conf.d.
+    # Adding a domain never means editing this file.
+    # (one line: HAProxy does not accept a continuation inside a switching rule)
+    use_backend %[req.ssl_sni,lower,map(/etc/haproxy/sni-passthrough.map)] if { req.ssl_sni,lower,map(/etc/haproxy/sni-passthrough.map) -m found }
 
     # --- Hub services: we terminate TLS for these ---
     acl sni_hub req.ssl_sni -i ${NTFY_DOMAIN} ${MINIFLUX_DOMAIN} ${CD_DOMAIN} ${HC_DOMAIN}
@@ -105,16 +109,9 @@ frontend tls_in
 
     default_backend be_reject
 
-# --- TLS passthrough: add one backend block per domain here ---
-backend be_passthrough_a
-    mode tcp
-    timeout server 1h
-    server srv1 127.0.0.1:441
-
-backend be_passthrough_b
-    mode tcp
-    timeout server 1h
-    server srv2 127.0.0.1:440
+# TLS passthrough backends are generated into /etc/haproxy/conf.d/ by
+# passthrough.sh and loaded by a second -f argument to haproxy. See
+# docs/tls-passthrough.md.
 
 backend terminate_tls
     mode tcp

@@ -164,7 +164,7 @@ things, so every step that touches shared state is additive:
 | **HAProxy** | An existing config not written by this project is backed up to `haproxy.cfg.pre-notification-hub.<timestamp>` before being replaced, with a warning telling you to merge anything it routed into the template. |
 | **Ports** | `05-preflight.sh` refuses to install if anything already holds a port the stack wants, naming the process. Every internal port is configurable in `hub.env`. |
 | **HAProxy's log** | If the haproxy package already ships an rsyslog rule or logrotate entry for `/var/log/haproxy.log`, those are used as-is rather than a competing one being installed. |
-| **:443** | Shared by SNI. Passthrough domains reach their own backends untouched; only this project's four domains are TLS-terminated. |
+| **:443** | Shared by SNI. Passthrough domains reach their own backends untouched; only this project's four domains are TLS-terminated. The routing table is untracked and lives on the host — see [tls-passthrough.md](tls-passthrough.md). |
 | **:80** | Stays owned by HAProxy permanently — certbot renews on `ACME_HTTP_PORT` behind it, so renewals never stop the proxy and never interrupt other services. |
 
 ## Credential handling

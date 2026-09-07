@@ -14,6 +14,54 @@ CONFIG_MARKER="Rendered from vps/haproxy/haproxy.cfg.tmpl"
 
 ensure_dir /etc/certs/proxy/combined 0750 root:haproxy
 
+# ---------------------------------------------------------------------------
+# TLS passthrough: routing table and generated files.
+#
+# The table lives outside the repository because the hostnames and internal
+# ports in it belong to this host, not to this project. Both generated files
+# must exist before HAProxy starts — it refuses to start if the map named in
+# its config is missing, even when empty.
+# ---------------------------------------------------------------------------
+install_file "$REPO_ROOT/vps/haproxy/passthrough.sh" "$HUB_PREFIX/bin/passthrough.sh" 0750 root:root || true
+ensure_dir /etc/haproxy/conf.d 0755 root:root
+
+if [[ ! -f /etc/haproxy/passthrough.conf ]]; then
+  install_file "$REPO_ROOT/vps/haproxy/passthrough.conf.example" \
+    /etc/haproxy/passthrough.conf 0640 root:root || true
+  log "seeded /etc/haproxy/passthrough.conf (no domains configured yet)"
+fi
+[[ -f /etc/haproxy/sni-passthrough.map ]] || install -m 0644 /dev/null /etc/haproxy/sni-passthrough.map
+
+# Regenerate from the table. Done before the main config is validated, so the
+# check below covers the passthrough backends too.
+PASSTHROUGH_TABLE=/etc/haproxy/passthrough.conf HAPROXY_MAIN_CFG=/nonexistent \
+  "$HUB_PREFIX/bin/passthrough.sh" sync
+
+# ---------------------------------------------------------------------------
+# Load conf.d alongside the main config.
+#
+# HAProxy has no include directive, but accepts repeated -f, and a directory
+# argument loads every file in it. The distro's unit builds its command line
+# from EXTRAOPTS, so append rather than replace — otherwise a future package
+# update that adds an option there would be silently dropped.
+# ---------------------------------------------------------------------------
+CURRENT_EXTRAOPTS="$(systemctl show haproxy -p Environment --value 2>/dev/null \
+  | tr ' ' '\n' | sed -n 's/^EXTRAOPTS=//p' | head -n1)"
+CURRENT_EXTRAOPTS="${CURRENT_EXTRAOPTS:--S /run/haproxy-master.sock}"
+
+if [[ "$CURRENT_EXTRAOPTS" != *"-f /etc/haproxy/conf.d"* ]]; then
+  ensure_dir /etc/systemd/system/haproxy.service.d 0755 root:root
+  cat > /etc/systemd/system/haproxy.service.d/notification-hub-confd.conf <<EOF
+# Load /etc/haproxy/conf.d in addition to the main config, so TLS passthrough
+# backends can live outside the generated haproxy.cfg.
+[Service]
+Environment="EXTRAOPTS=$CURRENT_EXTRAOPTS -f /etc/haproxy/conf.d"
+EOF
+  SYSTEMD_DIRTY=1
+  systemd_reload
+  log "haproxy will now also load /etc/haproxy/conf.d"
+fi
+
 # HAProxy refuses to start with an empty crt directory, which is the state on a
 # first install before any certificate has been issued.
 if ! compgen -G "/etc/certs/proxy/combined/*.pem" >/dev/null; then
@@ -52,7 +100,8 @@ fi
 
 # Validate the candidate before it replaces the live config — a bad config here
 # takes every service offline at once.
-haproxy -c -f "$TMP_CFG" >/dev/null || { rm -f "$TMP_CFG"; die "rendered haproxy config is invalid"; }
+haproxy -c -f "$TMP_CFG" -f /etc/haproxy/conf.d >/dev/null \
+  || { rm -f "$TMP_CFG"; die "rendered haproxy config is invalid"; }
 
 if [[ -f /etc/haproxy/haproxy.cfg ]] && cmp -s "$TMP_CFG" /etc/haproxy/haproxy.cfg; then
   log "haproxy config unchanged"
@@ -91,3 +140,8 @@ log "  (also stored in $HUB_ENV)"
 log ""
 log "Also set a password inside changedetection itself (Settings -> Password) so"
 log "it is not relying on the proxy alone."
+log ""
+log "TLS passthrough for other services on this host:"
+log "  $HUB_PREFIX/bin/passthrough.sh add <domain> <host:port>"
+log "  $HUB_PREFIX/bin/passthrough.sh list"
+log "(the table is /etc/haproxy/passthrough.conf and is not tracked in git)"

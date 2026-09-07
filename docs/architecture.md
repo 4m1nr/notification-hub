@@ -89,7 +89,9 @@ JSON datastore on disk, bind-mounted at `/var/lib/changedetection`.
 
 Sharing :443 by SNI is what lets this stack sit on a VPS that already proxies
 other services: they keep terminating their own TLS, and only the four domains
-named in `hub.env` are decrypted here. Unknown names are dropped at the TCP
+named in `hub.env` are decrypted here. Which domains pass through is read from a
+map file generated on the host, so that list is never in the repository and
+`haproxy.cfg` needs no edit to add one. Unknown names are dropped at the TCP
 layer, before a handshake is even attempted.
 
 Two configuration details that are load-bearing:

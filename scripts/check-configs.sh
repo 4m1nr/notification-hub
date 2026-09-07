@@ -12,6 +12,9 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 command -v docker >/dev/null || { echo "docker not available; skipping config validation"; exit 0; }
 
 WORK="$(mktemp -d)"
+# The haproxy container runs as a non-root user and must be able to read the
+# rendered config and the map file mounted from here.
+chmod 0755 "$WORK"
 trap 'rm -rf "$WORK"' EXIT
 
 # Mirrors lib.sh render(): only braced variables are substituted, so config
@@ -51,13 +54,37 @@ openssl req -x509 -newkey rsa:2048 -nodes -keyout "$WORK/k.pem" -out "$WORK/c.pe
   -days 1 -subj "/CN=test" 2>/dev/null
 cat "$WORK/c.pem" "$WORK/k.pem" > "$WORK/certs/test.pem"
 render vps/haproxy/haproxy.cfg.tmpl > "$WORK/haproxy.cfg"
+
+# Exercise the passthrough mechanism the way it runs in production: the map and
+# the generated backends live outside the main config, so a config that parses
+# on its own can still be broken once they are loaded alongside it.
+mkdir -p "$WORK/conf.d"
+printf 'sample.example.com  127.0.0.1:9441\n' > "$WORK/passthrough.conf"
+PASSTHROUGH_TABLE="$WORK/passthrough.conf" PASSTHROUGH_MAP="$WORK/sni-passthrough.map" \
+HAPROXY_CONF_D="$WORK/conf.d" HAPROXY_MAIN_CFG=/nonexistent \
+  ./vps/haproxy/passthrough.sh sync >/dev/null
+chmod -R a+rX "$WORK/conf.d" "$WORK/sni-passthrough.map"
+# Rewrite absolute paths to the container's mount point. Mounting at a fixed
+# path rather than mirroring the host path matters: some docker setups give the
+# daemon a private /tmp, and a same-path mount under /tmp is then invisible
+# inside the container.
+sed -i "s|/etc/haproxy/sni-passthrough.map|/cfg/sni-passthrough.map|g" "$WORK/haproxy.cfg"
 sed -i "s|@@ADMIN_UI_USER@@|admin|; s|@@ADMIN_UI_PASSWORD_HASH@@|$(openssl passwd -6 test)|" "$WORK/haproxy.cfg"
-sed -i "s|/etc/certs/proxy/combined/|/certs/|" "$WORK/haproxy.cfg"
-if docker run --rm -v "$WORK/haproxy.cfg:/h.cfg:ro" -v "$WORK/certs:/certs:ro" \
-     haproxy:lts-alpine haproxy -c -f /h.cfg; then
-  echo "    haproxy config OK"
+sed -i "s|/etc/certs/proxy/combined/|/cfg/certs/|" "$WORK/haproxy.cfg"
+# Load conf.d as a second -f, exactly as the systemd unit does.
+if docker run --rm -v "$WORK:/cfg:ro" \
+     haproxy:lts-alpine haproxy -c -f /cfg/haproxy.cfg -f /cfg/conf.d; then
+  echo "    haproxy config OK (with passthrough map and conf.d loaded)"
 else
   echo "    haproxy config FAILED"; fail=1
+fi
+
+# The generated backend must actually be referenced by the generated map.
+if ! grep -q 'be_pt_sample_example_com' "$WORK/conf.d/10-passthrough.cfg" 2>/dev/null \
+   || ! grep -q 'be_pt_sample_example_com' "$WORK/sni-passthrough.map" 2>/dev/null; then
+  echo "    passthrough map and backends are out of step"; fail=1
+else
+  echo "    passthrough map/backend names agree"
 fi
 
 echo "==> rsyslog"

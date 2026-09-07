@@ -1,0 +1,24 @@
+# TLS passthrough routing table.
+#
+# Install as /etc/haproxy/passthrough.conf. This file is NOT tracked in the
+# repository — it names your own hostnames and internal ports, which are yours,
+# not this project's.
+#
+# One line per domain:
+#
+#   <sni-hostname>    <backend-target>
+#
+# Connections whose TLS SNI matches the hostname are handed to the target with
+# the handshake untouched, so that service keeps terminating its own TLS. The
+# hub's own domains are unaffected; anything matching neither is silent-dropped.
+#
+# After editing, apply with:
+#
+#   sudo /opt/notification-hub/bin/passthrough.sh sync
+#
+# which regenerates HAProxy's map and backend files, validates the result, and
+# reloads with no dropped connections.
+
+# domain                     target
+#servenet.example.com        127.0.0.1:441
+#mooz.example.com            127.0.0.1:440
