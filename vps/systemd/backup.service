@@ -1,0 +1,12 @@
+[Unit]
+Description=Daily encrypted backup to Telegram
+Documentation=https://github.com/4m1nr/notification-hub
+After=network-online.target postgresql.service docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/notification-hub/hub.env
+ExecStart=/opt/notification-hub/bin/backup.sh
+# Uploading a chunked archive over a slow link can legitimately take a while.
+TimeoutStartSec=2h

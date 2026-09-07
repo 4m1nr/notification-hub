@@ -1,0 +1,32 @@
+# ntfy server configuration — rendered from vps/ntfy/server.yml.tmpl
+# Managed by notification-hub; edit the template in the repo, not this file.
+
+base-url: "https://${NTFY_DOMAIN}"
+
+# HAProxy terminates TLS and is the only thing that talks to ntfy, so bind to
+# loopback and trust the proxy's forwarded client address for rate limiting.
+listen-http: "127.0.0.1:2586"
+behind-proxy: true
+
+# All state lives in the shared PostgreSQL instance: message cache, access
+# control and web-push subscriptions. Setting database-url implicitly enables
+# auth, and cache-file / auth-file / web-push-file must NOT be set alongside it.
+database-url: "postgres://ntfy:${PG_NTFY_PASSWORD}@/ntfy?host=/var/run/postgresql"
+
+attachment-cache-dir: "/var/lib/ntfy/attachments"
+attachment-total-size-limit: "1G"
+attachment-file-size-limit: "15M"
+
+# Nothing is readable or writable without credentials — topic names are not
+# secrets, and these topics carry mail subjects and work chat.
+auth-default-access: "deny-all"
+
+# Keep messages around long enough for the phone to catch up after being offline.
+cache-duration: "24h"
+
+# The Android app holds a long-lived connection; keepalives stop middleboxes
+# (and HAProxy) from treating it as idle.
+keepalive-interval: "45s"
+manager-interval: "1h"
+
+log-level: info

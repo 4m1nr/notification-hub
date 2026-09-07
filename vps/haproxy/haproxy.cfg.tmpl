@@ -1,0 +1,113 @@
+# HAProxy — the single TLS terminator in front of every VPS-hosted service.
+# Rendered from vps/haproxy/haproxy.cfg.tmpl; edit the template, not this file.
+
+global
+    log /dev/log local0
+    chroot /var/lib/haproxy
+    stats socket /run/haproxy/admin.sock mode 660 level admin expose-fd listeners
+    stats timeout 30s
+    user haproxy
+    group haproxy
+    daemon
+
+    # Modern defaults. HAProxy issues nothing itself — every certificate here is
+    # placed by distribute-certs.sh, and applied by apply-pending-restarts.sh.
+    ssl-default-bind-ciphersuites TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256
+    ssl-default-bind-ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305
+    ssl-default-bind-options ssl-min-ver TLSv1.2 no-tls-tickets
+
+defaults
+    log     global
+    mode    http
+    option  httplog
+    option  dontlognull
+    option  forwardfor
+    timeout connect 5s
+    timeout client  60s
+    timeout server  60s
+    timeout http-request 15s
+
+#-----------------------------------------------------------------------------
+# :443 in TCP mode.
+#
+# The tunnel service terminates its own TLS for its own domains, so those
+# connections must reach it untouched. Everything else is handed to the internal
+# HTTPS frontend below over an abstract socket, where we do terminate TLS.
+# Inspecting SNI is what lets one port serve both.
+#-----------------------------------------------------------------------------
+frontend tls_in
+    bind *:443
+    mode tcp
+    option tcplog
+    tcp-request inspect-delay 5s
+    tcp-request content accept if { req.ssl_hello_type 1 }
+
+    # Uncomment and list the tunnel's domains to pass them through untouched.
+    #acl is_tunnel req.ssl_sni -i -f /etc/haproxy/tunnel-domains.acl
+    #use_backend tunnel_passthrough if is_tunnel
+
+    default_backend terminate_tls
+
+backend terminate_tls
+    mode tcp
+    server local_https abns@https send-proxy-v2
+
+#backend tunnel_passthrough
+#    mode tcp
+#    server tunnel 127.0.0.1:8443
+
+#-----------------------------------------------------------------------------
+# TLS termination and host-based routing.
+#
+# `crt` is pointed at a directory, and HAProxy loads every file in it and picks
+# per-connection by SNI. That directory must contain ONLY combined PEM files —
+# a subdirectory in there is a startup error, which is why per-domain split
+# copies live in /etc/certs/proxy/<domain>/ instead.
+#-----------------------------------------------------------------------------
+frontend https_in
+    bind abns@https accept-proxy ssl crt /etc/certs/proxy/combined/ alpn h2,http/1.1
+    http-request set-header X-Forwarded-Proto https
+    http-request set-header X-Forwarded-For %[src]
+
+    http-response set-header Strict-Transport-Security "max-age=31536000; includeSubDomains"
+
+    acl host_ntfy   hdr(host) -i ${NTFY_DOMAIN}
+    acl host_rss    hdr(host) -i ${MINIFLUX_DOMAIN}
+    acl host_watch  hdr(host) -i ${CD_DOMAIN}
+    acl host_checks hdr(host) -i ${HC_DOMAIN}
+
+    # Miniflux is publicly reachable because it is managed from the phone, so its
+    # login and API endpoints get a per-IP rate limit. A public login form on a
+    # VPS is found by scanners within hours.
+    stick-table type ip size 200k expire 5m store http_req_rate(30s)
+    acl miniflux_auth path / path_beg /fever /googlereader
+    acl too_many_requests sc_http_req_rate(0) gt 30
+    http-request track-sc0 src if host_rss miniflux_auth
+    http-request deny deny_status 429 if host_rss miniflux_auth too_many_requests
+
+    use_backend be_ntfy   if host_ntfy
+    use_backend be_rss    if host_rss
+    use_backend be_watch  if host_watch
+    use_backend be_checks if host_checks
+    default_backend be_ntfy
+
+#-----------------------------------------------------------------------------
+# Backends. Every service listens on loopback only.
+#-----------------------------------------------------------------------------
+backend be_ntfy
+    # The Android app holds a subscription open indefinitely. With the default
+    # 60s server timeout that connection is severed every minute and the phone
+    # reconnects in a loop, so ntfy's backend gets its own long timeouts.
+    timeout server 12h
+    timeout tunnel 12h
+    option http-server-close
+    server ntfy 127.0.0.1:2586 check
+
+backend be_rss
+    server miniflux 127.0.0.1:8080 check
+
+backend be_watch
+    server changedetection 127.0.0.1:5000 check
+
+backend be_checks
+    server healthchecks 127.0.0.1:8000 check

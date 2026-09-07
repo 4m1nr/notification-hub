@@ -1,0 +1,24 @@
+# Alert on anything at or above the configured severity, and hand it to our
+# omprog handler for publishing.
+#
+# Severity numbers are the syslog standard: 0 emerg, 1 alert, 2 crit, 3 err,
+# 4 warning, 5 notice, 6 info, 7 debug. Lower is more severe, so "<=" is the
+# right comparison for a threshold.
+
+module(load="omprog")
+
+# omprog starts the binary once and streams messages to it on stdin for the life
+# of rsyslog, so the handler is a long-running reader, not a per-message fork.
+if $syslogseverity <= ${SYSLOG_SEVERITY_MAX} then {
+  action(type="omprog"
+         binary="/opt/notification-hub/bin/syslog-ntfy"
+         template="NotificationHubFormat"
+         killUnresponsive="on"
+         signalOnClose="on"
+         output="/var/log/syslog-ntfy.log"
+         reportFailures="on"
+         queue.type="LinkedList"
+         queue.size="10000"
+         queue.saveOnShutdown="on"
+         action.resumeRetryCount="-1")
+}

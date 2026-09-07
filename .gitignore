@@ -1,0 +1,29 @@
+# Secrets — never commit
+.env
+*.env
+!*.env.example
+!.env.example
+hub.env
+
+# Certificates & keys
+*.pem
+*.key
+*.crt
+age-key.txt
+
+# Build output
+/bin/
+/dist/
+# Bare `go build ./cmd/<name>` drops the binary in the repo root
+/rss-relay
+/syslog-ntfy
+/mail-watcher
+/mattermost-watcher
+
+# Backups
+/backups/
+*.tar.gz
+*.age
+
+# Original project spec — kept locally, not published
+Project.md

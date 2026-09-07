@@ -1,0 +1,43 @@
+[Unit]
+Description=Miniflux to ntfy relay
+Documentation=https://github.com/4m1nr/notification-hub
+After=network-online.target miniflux.service
+Wants=network-online.target
+
+# Never give up restarting. systemd's default start-limit burst stops
+# restarting after five rapid failures — e.g. during a boot-time network
+# outage — and leaves the service dead until someone notices. This key
+# belongs in [Unit], not [Service]: systemd silently ignores it there.
+StartLimitIntervalSec=0
+
+# Never give up restarting. The default start-limit burst would leave the relay
+# dead after five quick failures, which is exactly when we most want it back.
+# This key belongs in [Unit]: systemd silently ignores it in [Service].
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=nhub
+Group=nhub
+EnvironmentFile=/etc/notification-hub/hub.env
+ExecStart=/opt/notification-hub/bin/rss-relay
+
+Restart=always
+RestartSec=10
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

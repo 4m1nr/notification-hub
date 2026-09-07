@@ -1,0 +1,8 @@
+[Unit]
+Description=Renew TLS certificates nearing expiry
+Documentation=https://github.com/4m1nr/notification-hub
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/notification-hub/hub.env
+ExecStart=/opt/notification-hub/bin/check-cert-renewal.sh

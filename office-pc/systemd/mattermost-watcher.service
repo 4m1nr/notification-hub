@@ -1,0 +1,38 @@
+[Unit]
+Description=Office Mattermost watcher (WebSocket to ntfy)
+Documentation=https://github.com/4m1nr/notification-hub
+After=network-online.target
+Wants=network-online.target
+
+# Never give up restarting. systemd's default start-limit burst stops
+# restarting after five rapid failures — e.g. during a boot-time network
+# outage — and leaves the service dead until someone notices. This key
+# belongs in [Unit], not [Service]: systemd silently ignores it there.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=nhub
+Group=nhub
+EnvironmentFile=/etc/notification-hub/mattermost-watcher.env
+ExecStart=/opt/notification-hub/bin/mattermost-watcher
+
+Restart=always
+RestartSec=10
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

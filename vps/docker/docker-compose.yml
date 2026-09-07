@@ -1,0 +1,77 @@
+# The only containers in this stack.
+#
+# Everything else on the VPS runs natively. These three stay containerised
+# deliberately: changedetection.io and healthchecks.io are Python apps with large,
+# fast-moving dependency trees, and sockpuppetbrowser is a packaged Chromium that
+# is genuinely painful to pin by hand.
+
+name: notification-hub
+
+services:
+  changedetection:
+    image: dgtlmoon/changedetection.io:latest
+    container_name: changedetection
+    restart: unless-stopped
+    # Loopback only: HAProxy is the single TLS terminator.
+    ports:
+      - "127.0.0.1:5000:5000"
+    volumes:
+      # A bind mount, not a named volume, so the backup job can read the
+      # datastore as ordinary files without going through docker.
+      - /var/lib/changedetection:/datastore
+    environment:
+      BASE_URL: "https://${CD_DOMAIN}"
+      # Routes fetches through the Playwright browser below. Without this,
+      # changedetection uses a plain HTTP fetcher and Browser Steps — the
+      # feature that gets past a login form — is unavailable.
+      PLAYWRIGHT_DRIVER_URL: "ws://sockpuppet:3000"
+      USE_X_SETTINGS: "1"
+    depends_on:
+      - sockpuppet
+
+  sockpuppet:
+    image: dgtlmoon/sockpuppetbrowser:latest
+    container_name: sockpuppet
+    restart: unless-stopped
+    hostname: sockpuppet
+    # Chromium's sandbox needs this. Note there is deliberately NO ports entry:
+    # this is a remotely-drivable browser, and anything that can reach it can
+    # make it fetch arbitrary URLs with your saved sessions.
+    cap_add:
+      - SYS_ADMIN
+    environment:
+      SCREEN_WIDTH: "1920"
+      SCREEN_HEIGHT: "1024"
+      SCREEN_DEPTH: "16"
+      MAX_CONCURRENT_CHROME_PROCESSES: "4"
+
+  healthchecks:
+    image: healthchecks/healthchecks:latest
+    container_name: healthchecks
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      # The host's PostgreSQL socket directory. This is how the container reaches
+      # the shared native database without any TCP listener being opened.
+      - /var/run/postgresql:/var/run/postgresql
+    environment:
+      SITE_ROOT: "https://${HC_DOMAIN}"
+      SITE_NAME: "Notification Hub Checks"
+      ALLOWED_HOSTS: "${HC_DOMAIN}"
+      SECRET_KEY: "${HC_SECRET_KEY}"
+      # Single-user instance; nobody should be able to sign themselves up.
+      REGISTRATION_OPEN: "False"
+      DEBUG: "False"
+
+      DB: postgres
+      DB_HOST: /var/run/postgresql
+      DB_NAME: healthchecks
+      DB_USER: healthchecks
+      DB_PASSWORD: "${PG_HEALTHCHECKS_PASSWORD}"
+
+      # Required for the built-in ntfy integration to be offered in the UI.
+      # Without it the integration simply does not appear.
+      NTFY_ENABLED: "True"
+      # Email is not configured; alerts are delivered to the phone via ntfy.
+      EMAIL_HOST: ""

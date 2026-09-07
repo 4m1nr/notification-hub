@@ -1,0 +1,11 @@
+[Unit]
+Description=Apply pending certificate restarts once daily
+
+[Timer]
+# A single, predictable window. Deliberately not the backup window.
+OnCalendar=*-*-* ${CERT_RESTART_TIME}
+Persistent=true
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

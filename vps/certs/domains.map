@@ -1,0 +1,30 @@
+# Certificate distribution table.
+#
+# One line per domain. Adding a new domain to the system is a one-line change
+# here — distribute-certs.sh, the renewal checker and the restart applier all
+# read this file, and nothing else needs to know about the new domain.
+#
+# Columns (whitespace-separated):
+#   domain      the certbot lineage name (as under /etc/letsencrypt/live/<domain>)
+#   dest        directory that receives the certificate
+#   owner:group ownership applied to the copied files
+#   format      split    -> fullchain.pem (0644) + privkey.pem (0640) in dest
+#               combined -> dest/<domain>.pem containing fullchain + privkey
+#               both     -> split files AND the combined PEM
+#   service     which service must be restarted/reloaded when this cert changes
+#               (haproxy | rsyslog | tunnel | none)
+#
+# HAProxy note: its `crt` directive is pointed at /etc/certs/proxy/combined/,
+# and it loads *every file* in that directory. Per-domain subdirectories must
+# therefore live outside it, which is why split copies go to
+# /etc/certs/proxy/<domain>/ while the combined PEM goes one level up in
+# combined/. Do not point HAProxy at a directory containing subdirectories.
+
+# domain                     dest                              owner:group      format    service
+#ntfy.example.com            /etc/certs/proxy/ntfy             root:haproxy     both      haproxy
+#rss.example.com             /etc/certs/proxy/rss              root:haproxy     both      haproxy
+#watch.example.com           /etc/certs/proxy/watch            root:haproxy     both      haproxy
+#checks.example.com          /etc/certs/proxy/checks           root:haproxy     both      haproxy
+#logs.example.com            /etc/certs/syslog                 root:syslog      split     rsyslog
+#a.tunnel.example.com        /etc/certs/tunnel/a               root:tunnel      split     tunnel
+#b.tunnel.example.com        /etc/certs/tunnel/b               root:tunnel      split     tunnel

@@ -1,0 +1,12 @@
+[Unit]
+Description=Run the daily backup
+
+[Timer]
+# Deliberately offset from CERT_RESTART_TIME so a backup is never reading
+# configuration that a service restart is in the middle of changing.
+OnCalendar=*-*-* ${BACKUP_TIME}
+Persistent=true
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

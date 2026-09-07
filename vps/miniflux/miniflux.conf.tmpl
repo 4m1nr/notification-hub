@@ -1,0 +1,31 @@
+# Miniflux configuration — rendered from vps/miniflux/miniflux.conf.tmpl
+# Managed by notification-hub; edit the template in the repo, not this file.
+
+# Miniflux is managed from the phone, so it is a public vhost. HAProxy terminates
+# TLS in front of it; Miniflux itself never leaves loopback.
+LISTEN_ADDR=127.0.0.1:8080
+BASE_URL=https://${MINIFLUX_DOMAIN}/
+
+# Tells Miniflux it is served over TLS so session cookies get Secure/SameSite.
+# Without this the login cookie is sent over a scheme Miniflux thinks is plain
+# HTTP, and the session silently fails to stick.
+HTTPS=1
+
+DATABASE_URL=user=miniflux password=${PG_MINIFLUX_PASSWORD} dbname=miniflux host=/var/run/postgresql sslmode=disable
+RUN_MIGRATIONS=1
+
+# Miniflux has no self-registration; the single admin is created by the installer.
+CREATE_ADMIN=0
+
+POLLING_FREQUENCY=60
+BATCH_SIZE=25
+WORKER_POOL_SIZE=5
+
+# The webhook that drives our relay. Miniflux signs each delivery with
+# X-Miniflux-Signature (HMAC-SHA256 over the body) using this secret; the relay
+# rejects anything that does not verify.
+WEBHOOK_URL=http://127.0.0.1:8181/webhook
+WEBHOOK_SECRET=${MINIFLUX_WEBHOOK_SECRET}
+
+LOG_LEVEL=info
+LOG_FORMAT=text

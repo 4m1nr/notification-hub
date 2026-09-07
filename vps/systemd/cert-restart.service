@@ -1,0 +1,8 @@
+[Unit]
+Description=Apply pending certificate restarts
+Documentation=https://github.com/4m1nr/notification-hub
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/notification-hub/hub.env
+ExecStart=/opt/notification-hub/bin/apply-pending-restarts.sh

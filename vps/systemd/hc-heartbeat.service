@@ -1,0 +1,8 @@
+[Unit]
+Description=Report VPS watcher liveness to healthchecks.io
+Documentation=https://github.com/4m1nr/notification-hub
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/notification-hub/hub.env
+ExecStart=/opt/notification-hub/bin/hc-heartbeat.sh
