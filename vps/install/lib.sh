@@ -76,13 +76,30 @@ ensure_dir() {
 # render expands ${VAR} references in a template and installs the result, but only
 # writes when the content actually changed — so a re-run doesn't churn mtimes or
 # trigger spurious reloads.
+#
+# Only variables written with braces are substituted. Bare $NAME is left alone,
+# because config formats we template have their own $-syntax that must survive:
+# rsyslog's $syslogseverity, for instance, would otherwise be expanded to an
+# empty string by envsubst and silently destroy the filter rule.
 render() {
   local src="$1" dest="$2" mode="${3:-0644}" owner="${4:-root:root}"
   [[ -f "$src" ]] || die "template not found: $src"
 
+  # Build the explicit substitution list from the template itself.
+  local shell_format
+  shell_format="$(grep -oE '\$\{[A-Za-z_][A-Za-z0-9_]*\}' "$src" | sort -u | tr '\n' ' ')"
+
   local tmp
   tmp="$(mktemp)"
-  envsubst < "$src" > "$tmp"
+  envsubst "$shell_format" < "$src" > "$tmp"
+
+  # A leftover ${...} means a variable was referenced but never set.
+  if grep -qE '\$\{[A-Za-z_][A-Za-z0-9_]*\}' "$tmp"; then
+    warn "unset variables in $src:"
+    grep -ohE '\$\{[A-Za-z_][A-Za-z0-9_]*\}' "$tmp" | sort -u | sed 's/^/    /' >&2
+    rm -f "$tmp"
+    die "refusing to install a template with unresolved variables"
+  fi
 
   if [[ -f "$dest" ]] && cmp -s "$tmp" "$dest"; then
     rm -f "$tmp"

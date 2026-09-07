@@ -25,6 +25,5 @@
 #rss.example.com             /etc/certs/proxy/rss              root:haproxy     both      haproxy
 #watch.example.com           /etc/certs/proxy/watch            root:haproxy     both      haproxy
 #checks.example.com          /etc/certs/proxy/checks           root:haproxy     both      haproxy
-#logs.example.com            /etc/certs/syslog                 root:syslog      split     rsyslog
 #a.tunnel.example.com        /etc/certs/tunnel/a               root:tunnel      split     tunnel
 #b.tunnel.example.com        /etc/certs/tunnel/b               root:tunnel      split     tunnel

@@ -1,7 +1,7 @@
 # Notification Hub
 
 One Android notification stream for a pile of unrelated alert sources: office
-mail, office Mattermost, RSS, remote syslog, website changes, backup failures,
+mail, office Mattermost, RSS, system logs, website changes, backup failures,
 and "a watcher has gone quiet".
 
 Everything is self-hosted. Nothing routes through a third-party push service you
@@ -12,6 +12,7 @@ do not control, and the phone talks to exactly one endpoint.
 ```
 ┌───────────────────────── VPS (Ubuntu 26.04, public) ─────────────────────────┐
 │                                                                              │
+│   ufw: only 22/80/443 inbound · fail2ban bans repeat offenders                │
 │   HAProxy :443  ── SNI ──┬─ TLS passthrough ──▶ (your separate tunnel svc)    │
 │                          └─ terminate ──┬──▶ ntfy            127.0.0.1:2586  │
 │                                         ├──▶ Miniflux        127.0.0.1:8080  │
@@ -20,7 +21,7 @@ do not control, and the phone talks to exactly one endpoint.
 │                                                                              │
 │   PostgreSQL (unix socket only) ── ntfy · miniflux · healthchecks databases   │
 │                                                                              │
-│   rsyslog :6514 (TLS) ──omprog──▶ syslog-ntfy ──┐                            │
+│   rsyslog (127.0.0.1 only) ──omprog──▶ syslog-ntfy ──┐                       │
 │   Miniflux ──webhook──▶ rss-relay :8181 ────────┤                            │
 │   changedetection ──Apprise─────────────────────┼──▶ ntfy topics             │
 │   healthchecks ──built-in ntfy integration──────┤                            │
@@ -52,6 +53,14 @@ database. Nothing listens on TCP; the container reaches the database through a
 bind-mounted unix socket. (changedetection.io is the exception — it has no SQL
 backend at all and keeps a JSON datastore on disk.)
 
+**Nothing accepts anonymous input.** The syslog collector binds `127.0.0.1`, so
+no one else can send you logs at all — rsyslog cannot authenticate remote senders
+over TLS without client certificates, and a public-CA `certvalid` check would
+accept a certificate issued to anyone. changedetection.io ships with no
+authentication of its own, so HAProxy gates it behind basic auth. Everything
+public sits behind per-IP rate limiting, sticky abuse flags, and fail2ban. See
+[docs/security.md](docs/security.md).
+
 **Silence is the alert.** No component sends "still alive" pings to your phone.
 Watchers ping healthchecks.io on a timer *while their connection is up*; when one
 stops, its check goes red and healthchecks notifies the `system` topic. The one
@@ -74,7 +83,8 @@ sudo install -m 0600 .env.example /etc/notification-hub/hub.env
 sudo "${EDITOR:-vi}" /etc/notification-hub/hub.env   # domains, ACME email
 
 # DNS for each domain must already point at this VPS.
-sudo ./bootstrap.sh 10-packages.sh 20-postgres.sh 30-ntfy.sh 40-miniflux.sh 50-go-services.sh
+sudo ./bootstrap.sh 10-packages.sh 15-firewall.sh 20-postgres.sh 30-ntfy.sh \
+                    40-miniflux.sh 50-go-services.sh
 
 # Issue certificates, then let the distribution script place them.
 sudo ./bootstrap.sh 70-certs.sh
@@ -83,7 +93,7 @@ sudo certbot certonly --standalone -d ntfy.example.com --email you@example.com -
 sudo /opt/notification-hub/bin/distribute-certs.sh
 
 # The rest.
-sudo ./bootstrap.sh 80-haproxy.sh 90-docker-apps.sh 60-syslog.sh 95-backup.sh
+sudo ./bootstrap.sh 80-haproxy.sh 90-docker-apps.sh 60-syslog.sh 85-fail2ban.sh 95-backup.sh
 ```
 
 Every step is idempotent — re-run any of them after a fix.
@@ -108,6 +118,7 @@ sudo systemctl restart mail-watcher mattermost-watcher
 | [docs/miniflux-android.md](docs/miniflux-android.md) | Managing feeds from Android |
 | [docs/healthchecks-setup.md](docs/healthchecks-setup.md) | Per-watcher checks and the ntfy integration |
 | [docs/changedetection-login.md](docs/changedetection-login.md) | Watching pages behind a login |
+| [docs/security.md](docs/security.md) | What's exposed, and every layer protecting it |
 | [docs/backup-restore.md](docs/backup-restore.md) | Decrypting and restoring from Telegram |
 
 ## Development
@@ -132,3 +143,8 @@ The backup encryption key is the one secret that must **not** live on the VPS �
 generate it elsewhere with `age-keygen` and put only the public recipient in
 `hub.env`. If the VPS is lost, the backups are still readable; if the VPS is
 compromised, they are not.
+
+Set `SSH_PORT` and `FAIL2BAN_IGNOREIP` in `hub.env` before running the firewall
+step — the installer refuses to enable ufw if the SSH port looks wrong, but an
+empty ignore list means a mistyped password can lock you out of your own
+services.

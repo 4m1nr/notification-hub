@@ -1,0 +1,36 @@
+# Syslog collector — LOCAL ONLY.
+#
+# This listener is bound to 127.0.0.1 on purpose. Nothing outside this machine
+# can reach it, so there is no question of who is allowed to send: only this
+# host can. That is a stronger guarantee than any authentication scheme, because
+# there is no credential to leak, steal, or brute-force.
+#
+# TLS is still used on the loopback listener. It costs nothing here and means the
+# socket cannot be read by another local process attaching to the interface.
+#
+# The certificate is self-signed and generated at install time. It deliberately
+# does NOT come from Let's Encrypt: a public CA answers "does this host control
+# that domain", which is irrelevant for a loopback socket, and pulling this into
+# the certbot rotation would add renewal machinery for no benefit.
+
+module(load="imtcp"
+       StreamDriver.Name="gtls"
+       StreamDriver.Mode="1"
+       # anon: the server presents its certificate, clients are not required to
+       # present one. Client authentication would be meaningless here — the only
+       # client that can connect is already on this machine.
+       StreamDriver.AuthMode="anon")
+
+global(
+  DefaultNetstreamDriver="gtls"
+  DefaultNetstreamDriverCAFile="/etc/certs/syslog/ca.pem"
+  DefaultNetstreamDriverCertFile="/etc/certs/syslog/fullchain.pem"
+  DefaultNetstreamDriverKeyFile="/etc/certs/syslog/privkey.pem"
+)
+
+# address="127.0.0.1" is the security control. Removing it, or changing it to
+# "0.0.0.0", exposes the collector to the internet — see docs/security.md before
+# doing that, because rsyslog cannot authenticate remote senders over TLS alone.
+input(type="imtcp"
+      port="${SYSLOG_TLS_PORT}"
+      address="127.0.0.1")

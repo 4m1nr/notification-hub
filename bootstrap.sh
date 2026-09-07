@@ -12,6 +12,7 @@ require_root
 
 STEPS=(
   10-packages.sh
+  15-firewall.sh
   20-postgres.sh
   30-ntfy.sh
   40-miniflux.sh
@@ -20,6 +21,7 @@ STEPS=(
   80-haproxy.sh
   90-docker-apps.sh
   60-syslog.sh
+  85-fail2ban.sh
   95-backup.sh
 )
 
@@ -30,8 +32,9 @@ usage: $0 [step ...]
 With no arguments, runs every step in order:
   ${STEPS[*]}
 
-Note the ordering: certificates (70) and HAProxy (80) come before syslog (60),
-because the syslog TLS listener needs a certificate that 70 distributes.
+Note the ordering: fail2ban (85) comes after HAProxy (80), because its jails
+watch HAProxy's log; and syslog (60) runs late so its alert path can reach an
+already-working ntfy.
 
 Examples:
   sudo $0                      # full install
@@ -68,4 +71,5 @@ log "  1. docs/ntfy-topics.md         — subscribe the phone"
 log "  2. docs/healthchecks-setup.md  — create the checks, then fill HC_PING_URL_* in $HUB_ENV"
 log "  3. docs/miniflux-android.md    — connect an Android reader"
 log "  4. docs/changedetection-login.md — set up a watch behind a login"
-log "  5. $HUB_PREFIX/bin/backup.sh --dry-run  — verify backups before trusting them"
+log "  5. docs/security.md            — what is exposed, and what protects it"
+log "  6. $HUB_PREFIX/bin/backup.sh --dry-run  — verify backups before trusting them"

@@ -1,0 +1,5 @@
+Sep  7 14:23:01 vps haproxy[1234]: 203.0.113.9:54321 [07/Sep/2026:14:23:01.123] https_in~ be_rss/miniflux 0/0/1/2/3 401 234 - - ---- 2/2/0/0/0 0/0 "POST / HTTP/2.0"
+Sep  7 14:23:02 vps haproxy[1234]: 203.0.113.9:54322 [07/Sep/2026:14:23:02.456] https_in~ be_watch/changedetection 0/0/1/2/3 403 120 - - ---- 1/1/0/0/0 0/0 "GET /settings HTTP/2.0"
+Sep  7 14:23:03 vps haproxy[1234]: 198.51.100.7:33001 [07/Sep/2026:14:23:03.789] https_in~ be_ntfy/ntfy 0/0/0/1/1 429 90 - - ---- 5/5/0/0/0 0/0 "GET /mail/json HTTP/1.1"
+Sep  7 14:23:04 vps haproxy[1234]: 198.51.100.7:33002 [07/Sep/2026:14:23:04.001] https_in~ <NOSRV> -1/-1/-1/-1/0 421 0 - - PR-- 1/1/0/0/0 0/0 "GET / HTTP/1.1"
+Sep  7 14:23:05 vps haproxy[1234]: 192.0.2.50:44000 [07/Sep/2026:14:23:05.222] https_in~ be_rss/miniflux 0/0/1/9/12 200 5120 - - ---- 1/1/0/0/0 0/0 "GET /unread HTTP/2.0"

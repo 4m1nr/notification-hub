@@ -36,6 +36,7 @@ check: vet test
 	@command -v systemd-analyze >/dev/null && \
 		systemd-analyze verify vps/systemd/*.service office-pc/systemd/*.service 2>&1 | grep -v '^$$' || \
 		echo "systemd-analyze not available, skipping"
+	@./scripts/check-configs.sh
 
 clean:
 	rm -rf $(BIN)

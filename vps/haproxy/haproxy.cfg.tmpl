@@ -1,5 +1,12 @@
-# HAProxy — the single TLS terminator in front of every VPS-hosted service.
-# Rendered from vps/haproxy/haproxy.cfg.tmpl; edit the template, not this file.
+# HAProxy — the single TLS terminator and the security boundary for everything
+# reachable from the internet.
+#
+# Rendered from vps/haproxy/haproxy.cfg.tmpl. Two substitution styles are used
+# here on purpose:
+#   ${VAR}     expanded by envsubst from hub.env
+#   @@NAME@@   substituted by sed in 80-haproxy.sh
+# The password hash uses the @@ form because crypt hashes contain '$' characters
+# that envsubst would mangle into empty variable expansions.
 
 global
     log /dev/log local0
@@ -11,7 +18,7 @@ global
     daemon
 
     # Modern defaults. HAProxy issues nothing itself — every certificate here is
-    # placed by distribute-certs.sh, and applied by apply-pending-restarts.sh.
+    # placed by distribute-certs.sh and applied by apply-pending-restarts.sh.
     ssl-default-bind-ciphersuites TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256
     ssl-default-bind-ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305
     ssl-default-bind-options ssl-min-ver TLSv1.2 no-tls-tickets
@@ -21,11 +28,43 @@ defaults
     mode    http
     option  httplog
     option  dontlognull
-    option  forwardfor
     timeout connect 5s
     timeout client  60s
     timeout server  60s
-    timeout http-request 15s
+    # Bounds slowloris: a client that opens a connection and dribbles headers is
+    # cut off rather than occupying a slot indefinitely.
+    timeout http-request 10s
+    timeout http-keep-alive 15s
+    timeout queue 30s
+
+#-----------------------------------------------------------------------------
+# Credentials for the admin UIs.
+#
+# changedetection.io ships with NO authentication of its own, and it drives a
+# real browser that holds your saved logins — so it must never be reachable
+# without a credential. healthchecks has a Django login, but gating it here too
+# means a brute-force attempt never reaches the application at all.
+#-----------------------------------------------------------------------------
+userlist admin_users
+    user @@ADMIN_UI_USER@@ password @@ADMIN_UI_PASSWORD_HASH@@
+
+#-----------------------------------------------------------------------------
+# Abuse tracking tables.
+#
+# These are backends only because that is how HAProxy scopes a stick-table; no
+# traffic is ever routed to them.
+#-----------------------------------------------------------------------------
+backend st_clients
+    # http_err_rate counts 4xx responses, which is the signal that actually
+    # identifies credential stuffing — far better than raw request rate, since a
+    # brute-force attempt looks like ordinary traffic apart from the failures.
+    # gpc0 is a sticky flag: once set, the client stays blocked for the table's
+    # expiry even if it goes quiet, so backing off does not clear the penalty.
+    stick-table type ipv6 size 1m expire 1h store http_req_rate(10s),http_err_rate(5m),conn_rate(10s),gpc0
+
+backend st_logins
+    # Separate, much tighter budget for actual login form submissions.
+    stick-table type ipv6 size 1m expire 1h store http_req_rate(5m)
 
 #-----------------------------------------------------------------------------
 # :443 in TCP mode.
@@ -57,7 +96,21 @@ backend terminate_tls
 #    server tunnel 127.0.0.1:8443
 
 #-----------------------------------------------------------------------------
-# TLS termination and host-based routing.
+# Plain HTTP: redirect to HTTPS, and keep the ACME challenge path working.
+#-----------------------------------------------------------------------------
+frontend http_in
+    bind *:80
+    # certbot --standalone binds :80 itself while HAProxy is stopped, so this is
+    # only for renewals performed with the webroot plugin.
+    acl acme_challenge path_beg /.well-known/acme-challenge/
+    http-request redirect scheme https code 301 unless acme_challenge
+    use_backend be_acme if acme_challenge
+
+backend be_acme
+    server acme 127.0.0.1:8402
+
+#-----------------------------------------------------------------------------
+# TLS termination, abuse control, and host-based routing.
 #
 # `crt` is pointed at a directory, and HAProxy loads every file in it and picks
 # per-connection by SNI. That directory must contain ONLY combined PEM files —
@@ -66,30 +119,67 @@ backend terminate_tls
 #-----------------------------------------------------------------------------
 frontend https_in
     bind abns@https accept-proxy ssl crt /etc/certs/proxy/combined/ alpn h2,http/1.1
+
     http-request set-header X-Forwarded-Proto https
     http-request set-header X-Forwarded-For %[src]
 
     http-response set-header Strict-Transport-Security "max-age=31536000; includeSubDomains"
+    http-response set-header X-Content-Type-Options nosniff
+    http-response set-header X-Frame-Options SAMEORIGIN
+    http-response set-header Referrer-Policy strict-origin-when-cross-origin
 
     acl host_ntfy   hdr(host) -i ${NTFY_DOMAIN}
     acl host_rss    hdr(host) -i ${MINIFLUX_DOMAIN}
     acl host_watch  hdr(host) -i ${CD_DOMAIN}
     acl host_checks hdr(host) -i ${HC_DOMAIN}
 
-    # Miniflux is publicly reachable because it is managed from the phone, so its
-    # login and API endpoints get a per-IP rate limit. A public login form on a
-    # VPS is found by scanners within hours.
-    stick-table type ip size 200k expire 5m store http_req_rate(30s)
-    acl miniflux_auth path / path_beg /fever /googlereader
-    acl too_many_requests sc_http_req_rate(0) gt 30
-    http-request track-sc0 src if host_rss miniflux_auth
-    http-request deny deny_status 429 if host_rss miniflux_auth too_many_requests
+    # ---- Tier 0: everything is tracked ----
+    http-request track-sc0 src table st_clients
+
+    # ---- Tier 3: already-flagged abusers get nothing ----
+    # silent-drop closes without a response, so a scanner learns nothing and
+    # burns its own connection timeout. Placed first so a flagged client costs
+    # us no further rule evaluation.
+    acl flagged_abuser sc0_get_gpc0(st_clients) gt 0
+    http-request silent-drop if flagged_abuser
+
+    # ---- Tier 2: sustained authentication failures = credential stuffing ----
+    # 30 4xx responses in 5 minutes from one address. A human fat-fingering a
+    # password does not reach this; a script does within seconds.
+    acl auth_failure_flood sc0_http_err_rate(st_clients) gt 30
+    http-request sc-inc-gpc0(0) if auth_failure_flood
+
+    # ---- Tier 1: volumetric limits ----
+    acl request_flood sc0_http_req_rate(st_clients) gt 400
+    acl connect_flood sc0_conn_rate(st_clients) gt 200
+    http-request deny deny_status 429 if auth_failure_flood
+    http-request deny deny_status 429 if request_flood
+    http-request deny deny_status 429 if connect_flood
+
+    # ---- Login forms get their own, far tighter budget ----
+    # Miniflux posts its login to /, healthchecks to /accounts/login/,
+    # changedetection to /login. Ten attempts per five minutes per address.
+    acl is_post          method POST
+    acl is_login_path    path / path_beg /accounts/login /login
+    acl login_flood      sc1_http_req_rate(st_logins) gt 10
+    http-request track-sc1 src table st_logins if is_post is_login_path
+    http-request deny deny_status 429 if is_post is_login_path login_flood
+
+    # ---- Admin UIs sit behind basic auth ----
+    # healthchecks' ping and API endpoints stay open: the office PC checks in on
+    # /ping/<uuid>, where the UUID is itself the credential.
+    acl hc_open       path_beg /ping/ /api/
+    acl admin_authed  http_auth(admin_users)
+    http-request auth realm "notification-hub" if host_watch !admin_authed
+    http-request auth realm "notification-hub" if host_checks !hc_open !admin_authed
+
+    # An unknown Host header is almost always a scanner probing the IP directly.
+    http-request deny deny_status 421 unless host_ntfy || host_rss || host_watch || host_checks
 
     use_backend be_ntfy   if host_ntfy
     use_backend be_rss    if host_rss
     use_backend be_watch  if host_watch
     use_backend be_checks if host_checks
-    default_backend be_ntfy
 
 #-----------------------------------------------------------------------------
 # Backends. Every service listens on loopback only.

@@ -7,10 +7,10 @@ Order matters here. Each section explains why it comes where it does.
 - A VPS running **Ubuntu 26.04** with a public IP and root access.
 - An office PC running **Ubuntu**, always on, inside the corporate network.
 - DNS **A records already pointing at the VPS** for each domain you will use:
-  `ntfy`, `rss`, `watch`, `checks`, and `logs` if you want remote syslog.
-  Certificates cannot be issued before DNS resolves.
-- Ports 80 and 443 reachable from the internet (80 is needed for ACME), plus
-  6514 if you are collecting syslog from other machines.
+  `ntfy`, `rss`, `watch` and `checks`. Certificates cannot be issued before DNS
+  resolves.
+- Ports 80 and 443 reachable from the internet (80 is needed for ACME). Nothing
+  else needs to be open — the syslog collector is loopback-only.
 - An Android phone with the **ntfy** app.
 - A Telegram bot (from `@BotFather`) and a **private** chat or channel for it.
 
@@ -41,10 +41,16 @@ age-keygen -o backup-key.txt
 Copy the `public key:` line into `AGE_RECIPIENT` in `hub.env`, and store
 `backup-key.txt` in a password manager. Without it, the backups are unrecoverable.
 
-## 3. Base, database, ntfy, Miniflux
+## 3. Firewall, database, ntfy, Miniflux
+
+Check `SSH_PORT` in `hub.env` matches the port sshd actually uses, and put your
+home/office addresses in `FAIL2BAN_IGNOREIP`. The firewall step refuses to run if
+the SSH port looks wrong, because enabling ufw with the wrong one locks you out
+of a remote VPS permanently.
 
 ```bash
-sudo ./bootstrap.sh 10-packages.sh 20-postgres.sh 30-ntfy.sh 40-miniflux.sh 50-go-services.sh
+sudo ./bootstrap.sh 10-packages.sh 15-firewall.sh 20-postgres.sh \
+                    30-ntfy.sh 40-miniflux.sh 50-go-services.sh
 ```
 
 This installs packages and Docker, provisions the three PostgreSQL databases with
@@ -78,10 +84,13 @@ Uncomment and edit the lines for your domains. The columns are documented in the
 file; briefly:
 
 ```
-# domain            dest                     owner:group    format  service
-ntfy.example.com    /etc/certs/proxy/ntfy    root:haproxy   both    haproxy
-logs.example.com    /etc/certs/syslog        root:syslog    split   rsyslog
+# domain            dest                      owner:group    format  service
+ntfy.example.com    /etc/certs/proxy/ntfy     root:haproxy   both    haproxy
+rss.example.com     /etc/certs/proxy/rss      root:haproxy   both    haproxy
 ```
+
+The syslog collector is not in this table: it uses a self-signed certificate on
+a loopback socket, so there is nothing for a public CA to attest.
 
 Now issue them. Port 80 must be free — HAProxy is not running yet, which is
 exactly why this step comes before it:
@@ -130,6 +139,11 @@ sudo ./bootstrap.sh 90-docker-apps.sh
 cd /etc/notification-hub/docker && sudo docker compose exec healthchecks ./manage.py createsuperuser
 ```
 
+Both of these sit behind HTTP basic auth at the proxy — credentials are in
+`ADMIN_UI_USER` / `ADMIN_UI_PASSWORD` in `hub.env`, printed by step 80. Set a
+password inside changedetection too (**Settings → Password**) so it is not
+relying on the proxy alone.
+
 Then work through [healthchecks-setup.md](healthchecks-setup.md): create the five
 checks, copy their ping URLs into `hub.env`, and wire the ntfy integration to the
 `system` topic.
@@ -141,19 +155,22 @@ sudo systemctl restart rss-relay hc-heartbeat.timer
 For website monitoring, [changedetection-login.md](changedetection-login.md)
 covers Browser Steps and getting past login gates.
 
-## 8. Syslog
-
-This comes after certificates because the TLS listener needs one:
+## 8. Syslog and fail2ban
 
 ```bash
-sudo ./bootstrap.sh 60-syslog.sh
+sudo ./bootstrap.sh 60-syslog.sh 85-fail2ban.sh
 logger -p user.warning "hub test warning"     # should notify
 logger -p user.info    "hub test info"        # should NOT notify
 ```
 
-To forward from another machine, copy `vps/syslog/client-example.conf` to it as
-`/etc/rsyslog.d/90-forward-to-hub.conf`, adjust the target and certificates, and
-restart rsyslog there.
+The collector binds `127.0.0.1`, so it takes logs from this machine only —
+nobody else can send you alerts. `85-fail2ban.sh` verifies its filters against
+known-good sample lines and fails the install if they do not match, because a
+regex that silently matches nothing looks like protection and is not.
+
+Opening this up to other machines is a deliberate decision with real
+requirements; `docs/security.md` explains what it takes and why the obvious
+approach is unsafe.
 
 ## 9. Backups
 
@@ -218,6 +235,14 @@ curl -s -o /dev/null -w '%{http_code}\n' https://ntfy.example.com/mail/json?poll
 
 # The relay rejects an unsigned webhook
 curl -s -o /dev/null -w '%{http_code}\n' -X POST -d '{}' http://127.0.0.1:8181/webhook  # 401
+
+# Admin UIs demand credentials; healthchecks pings stay open
+curl -s -o /dev/null -w '%{http_code}\n' https://watch.example.com/          # 401
+curl -s -o /dev/null -w '%{http_code}\n' https://checks.example.com/ping/x   # not 401
+
+# Only 22/80/443 inbound; syslog is loopback-only
+sudo ufw status verbose
+ss -ltn | grep 6514        # 127.0.0.1:6514 only
 
 # Certificates are placed with the right modes
 sudo find /etc/certs -name 'privkey.pem'   -exec stat -c '%a %n' {} \;   # 640

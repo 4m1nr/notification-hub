@@ -17,7 +17,7 @@ mattermost-watcher──┘                  │              │               
   WebSocket + PAT                      │     ntfy     │◀── subscribe ───────┤
                                        │              │                     │
 Miniflux ──webhook──▶ rss-relay ──────▶│  7 topics    │                     │
-rsyslog  ──omprog───▶ syslog-ntfy ────▶│              │                     │
+rsyslog (local) ──omprog─▶ syslog-ntfy▶│              │                     │
 changedetection ──Apprise─────────────▶│              │                     │
 healthchecks ──ntfy integration───────▶│              │                     │
 backup.sh ──on failure────────────────▶└──────────────┘                     │
@@ -150,6 +150,22 @@ The daily backup breaks the pattern deliberately: it alerts on failure
 immediately rather than waiting out a grace period, because a once-daily job
 could lose a full day unnoticed.
 
+## Security boundary
+
+HAProxy is not just the TLS terminator, it is where abuse is stopped. Per-IP
+stick tables track request rate, connection rate and — most usefully — the rate
+of 4xx responses, which is what actually distinguishes credential stuffing from
+ordinary traffic. Crossing that threshold sets a sticky flag, and flagged clients
+are `silent-drop`ped for an hour whether or not they back off. fail2ban then
+promotes repeat offenders to firewall bans that survive a HAProxy reload.
+
+The syslog collector is bound to `127.0.0.1`. rsyslog cannot authenticate remote
+senders over TLS without client certificates, and the tempting shortcut —
+`x509/certvalid` against a public CA — accepts any certificate that CA ever
+issued to anyone. Not listening is the honest answer.
+
+Full detail in [security.md](security.md).
+
 ## Our code
 
 One Go module, four commands, shared internals:
@@ -184,5 +200,8 @@ idiom — a static binary plus a systemd unit with an `EnvironmentFile`.
 | Bad HAProxy config on reload | `haproxy -c` validates before reloading |
 | Backup upload fails | Immediate ntfy alert naming the failed step |
 | A log flood | Dedup window + per-minute cap in `syslog-ntfy` |
+| Someone injecting fake logs | Impossible — the collector binds `127.0.0.1` |
+| Credential stuffing on a public service | HAProxy 4xx-rate tracking → sticky block → fail2ban |
+| changedetection's missing auth | HTTP basic auth enforced at HAProxy |
 | A mail flood | Batches over 10 collapse into one summary |
 | The VPS is lost entirely | Encrypted daily archive in Telegram, restorable per `backup-restore.md` |
