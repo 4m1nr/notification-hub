@@ -1,0 +1,29 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # `make check` is the whole suite: vet, tests, bash -n + shellcheck on
+      # every script, systemd-analyze on the unit files, and check-configs.sh.
+      # ubuntu-latest ships shellcheck, systemd and docker compose already.
+      - run: make check
+
+      - run: make build

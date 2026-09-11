@@ -1,5 +1,7 @@
 # Notification Hub
 
+[![ci](https://github.com/4m1nr/notification-hub/actions/workflows/ci.yml/badge.svg)](https://github.com/4m1nr/notification-hub/actions/workflows/ci.yml)
+
 One Android notification stream for a pile of unrelated alert sources: office
 mail, office Mattermost, RSS, system logs, website changes, backup failures,
 and "a watcher has gone quiet".
