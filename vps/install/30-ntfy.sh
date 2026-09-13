@@ -66,7 +66,8 @@ done
 for var in NTFY_TOKEN_MAIL NTFY_TOKEN_MATTERMOST NTFY_TOKEN_RSS \
            NTFY_TOKEN_SYSLOG NTFY_TOKEN_SYSTEM NTFY_TOKEN_BACKUP NTFY_TOKEN_SITECHANGES; do
   if ! grep -qE "^${var}=" "$HUB_ENV"; then
-    token="$(ntfy token add --expires=never --label="$var" publisher | grep -oE 'tk_[A-Za-z0-9]+' | head -n1)"
+    # No --expires: that is how ntfy makes a token that never expires.
+    token="$(ntfy token add --label="$var" publisher | grep -oE 'tk_[A-Za-z0-9]+' | head -n1)"
     [[ -n "$token" ]] || die "failed to create ntfy token for $var"
     set_env_var "$var" "$token" >/dev/null
   fi
