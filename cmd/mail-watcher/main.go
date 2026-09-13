@@ -7,6 +7,8 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -38,6 +40,7 @@ type watcher struct {
 	username string
 	password string
 	mailbox  string
+	tls      *tls.Config
 
 	topic string
 	ntfy  *ntfy.Client
@@ -57,19 +60,35 @@ func main() {
 
 	cfg := config.New()
 	var (
-		server    = cfg.Required("IMAP_SERVER") // host:993
-		username  = cfg.Required("IMAP_USERNAME")
-		password  = cfg.Required("IMAP_PASSWORD")
-		mailbox   = cfg.Optional("IMAP_MAILBOX", "INBOX")
-		ntfyURL   = cfg.Required("NTFY_URL")
-		ntfyToken = cfg.Required("NTFY_TOKEN_MAIL")
-		topic     = cfg.Optional("NTFY_TOPIC_MAIL", "mail")
-		hcURL     = cfg.Optional("HC_PING_URL_MAIL", "")
-		hcEvery   = cfg.Duration("HC_INTERVAL", 5*time.Minute)
+		server   = cfg.Required("IMAP_SERVER") // host:993
+		username = cfg.Required("IMAP_USERNAME")
+		password = cfg.Required("IMAP_PASSWORD")
+		mailbox  = cfg.Optional("IMAP_MAILBOX", "INBOX")
+		// Office mail servers are routinely reached under a name their
+		// certificate does not carry, and signed by a CA nobody outside the
+		// company trusts. Verify against the right name and the right CA rather
+		// than switching verification off.
+		tlsName     = cfg.Optional("IMAP_TLS_SERVER_NAME", "")
+		tlsCAFile   = cfg.Optional("IMAP_TLS_CA_FILE", "")
+		tlsInsecure = cfg.Bool("IMAP_TLS_INSECURE", false)
+		ntfyURL     = cfg.Required("NTFY_URL")
+		ntfyToken   = cfg.Required("NTFY_TOKEN_MAIL")
+		topic       = cfg.Optional("NTFY_TOPIC_MAIL", "mail")
+		hcURL       = cfg.Optional("HC_PING_URL_MAIL", "")
+		hcEvery     = cfg.Duration("HC_INTERVAL", 5*time.Minute)
 	)
 	if err := cfg.Err(); err != nil {
 		log.Error("invalid configuration", "error", err)
 		os.Exit(1)
+	}
+
+	tlsConfig, err := buildTLSConfig(tlsName, tlsCAFile, tlsInsecure)
+	if err != nil {
+		log.Error("invalid TLS configuration", "error", err)
+		os.Exit(1)
+	}
+	if tlsInsecure {
+		log.Warn("IMAP_TLS_INSECURE is set: the server's certificate is not verified")
 	}
 
 	w := &watcher{
@@ -77,6 +96,7 @@ func main() {
 		username: username,
 		password: password,
 		mailbox:  mailbox,
+		tls:      tlsConfig,
 		topic:    topic,
 		ntfy:     ntfy.NewClient(ntfyURL, ntfyToken, log),
 		log:      log,
@@ -175,6 +195,7 @@ func (w *watcher) session(ctx context.Context) error {
 		},
 	}
 
+	options.TLSConfig = w.tls
 	c, err := imapclient.DialTLS(w.server, options)
 	if err != nil {
 		return fmt.Errorf("dial %s: %w", w.server, err)
@@ -322,4 +343,28 @@ func sender(env *imap.Envelope) string {
 		return addr
 	}
 	return "New mail"
+}
+
+// buildTLSConfig returns nil when every option is at its default, so the
+// client's own defaults apply untouched.
+func buildTLSConfig(serverName, caFile string, insecure bool) (*tls.Config, error) {
+	if serverName == "" && caFile == "" && !insecure {
+		return nil, nil
+	}
+	cfg := &tls.Config{
+		ServerName:         serverName,
+		InsecureSkipVerify: insecure, //nolint:gosec // explicit, logged opt-in
+	}
+	if caFile != "" {
+		pem, err := os.ReadFile(caFile)
+		if err != nil {
+			return nil, fmt.Errorf("IMAP_TLS_CA_FILE: %w", err)
+		}
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(pem) {
+			return nil, fmt.Errorf("IMAP_TLS_CA_FILE: no certificates found in %s", caFile)
+		}
+		cfg.RootCAs = pool
+	}
+	return cfg, nil
 }
