@@ -3,7 +3,7 @@
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 require_root
 load_env
-require_vars CD_DOMAIN HC_DOMAIN PG_HEALTHCHECKS_PASSWORD
+require_vars CD_DOMAIN HC_DOMAIN PG_PORT PG_HEALTHCHECKS_PASSWORD
 
 command -v docker >/dev/null || die "docker not installed; run 10-packages.sh first"
 

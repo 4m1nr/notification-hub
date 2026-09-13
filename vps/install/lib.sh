@@ -184,6 +184,25 @@ gen_secret() {
   openssl rand -base64 "$bytes" | tr -d '\n=+/' | cut -c1-"$((bytes))"
 }
 
+# put_env_var writes KEY=value to the hub env file unconditionally, replacing an
+# existing line. For values discovered from the host (not secrets), where a
+# stale entry would be wrong rather than merely different.
+put_env_var() {
+  local key="$1" value="$2"
+  ensure_dir "$(dirname "$HUB_ENV")" 0750 root:root
+  touch "$HUB_ENV"; chmod 0600 "$HUB_ENV"
+  if grep -qE "^${key}=" "$HUB_ENV"; then
+    local current
+    current="$(grep -E "^${key}=" "$HUB_ENV" | tail -n1 | cut -d= -f2- | tr -d '"')"
+    [[ "$current" == "$value" ]] && return 0
+    sed -i -E "s|^${key}=.*|${key}=\"${value}\"|" "$HUB_ENV"
+    log "updated $key ($current -> $value)"
+  else
+    printf '%s="%s"\n' "$key" "$value" >> "$HUB_ENV"
+    log "recorded $key=$value"
+  fi
+}
+
 # set_env_var appends KEY=value to the hub env file if the key is not already
 # present, and echoes the effective value. Used for generated credentials that
 # must survive re-runs.

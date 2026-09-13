@@ -11,7 +11,7 @@ BASE_URL=https://${MINIFLUX_DOMAIN}/
 # HTTP, and the session silently fails to stick.
 HTTPS=1
 
-DATABASE_URL=user=miniflux password=${PG_MINIFLUX_PASSWORD} dbname=miniflux host=/var/run/postgresql sslmode=disable
+DATABASE_URL=user=miniflux password=${PG_MINIFLUX_PASSWORD} dbname=miniflux host=/var/run/postgresql port=${PG_PORT} sslmode=disable
 RUN_MIGRATIONS=1
 
 # Miniflux has no self-registration; the single admin is created by the installer.

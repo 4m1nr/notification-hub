@@ -15,6 +15,14 @@ PG_SOCKET_DIR="${PG_SOCKET_DIR:-/var/run/postgresql}"
 
 psql_super() { su - postgres -c "psql -v ON_ERROR_STOP=1 -qtAX -c \"$1\""; }
 
+# The cluster is not necessarily on 5432: pg_createcluster takes the next free
+# port when something else already holds the default, and the socket is named
+# after it (.s.PGSQL.<port>). Every consumer reads the real port from hub.env.
+PG_PORT="$(su - postgres -c 'psql -tAX -c "SHOW port"')"
+[[ "$PG_PORT" =~ ^[0-9]+$ ]] || die "could not determine the PostgreSQL port (got: '$PG_PORT')"
+[[ -S "$PG_SOCKET_DIR/.s.PGSQL.$PG_PORT" ]] || die "no socket at $PG_SOCKET_DIR/.s.PGSQL.$PG_PORT"
+put_env_var PG_PORT "$PG_PORT"
+
 role_exists() {
   [[ "$(su - postgres -c "psql -tAX -c \"SELECT 1 FROM pg_roles WHERE rolname='$1'\"")" == "1" ]]
 }
@@ -78,8 +86,8 @@ if ! grep -q "$MARKER" "$PG_HBA"; then
 fi
 
 # Confirm we did not accidentally expose a TCP listener.
-if ss -ltn 2>/dev/null | grep -qE ':5432\b'; then
-  warn "PostgreSQL is listening on TCP:5432 — the design expects unix-socket-only access"
+if ss -ltn 2>/dev/null | grep -qE "[^0-9]${PG_PORT}\\b"; then
+  warn "PostgreSQL is listening on TCP:${PG_PORT} — the design expects unix-socket-only access"
 fi
 
-log "postgres ready (socket: $PG_SOCKET_DIR)"
+log "postgres ready (socket: $PG_SOCKET_DIR/.s.PGSQL.$PG_PORT)"

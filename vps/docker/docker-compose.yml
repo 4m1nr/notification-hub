@@ -66,6 +66,8 @@ services:
 
       DB: postgres
       DB_HOST: /var/run/postgresql
+      # The socket is named after the cluster's port, so this must match too.
+      DB_PORT: "${PG_PORT}"
       DB_NAME: healthchecks
       DB_USER: healthchecks
       DB_PASSWORD: "${PG_HEALTHCHECKS_PASSWORD}"

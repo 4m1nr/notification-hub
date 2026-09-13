@@ -4,7 +4,7 @@
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 require_root
 load_env
-require_vars MINIFLUX_DOMAIN PG_MINIFLUX_PASSWORD
+require_vars MINIFLUX_DOMAIN PG_PORT PG_MINIFLUX_PASSWORD
 
 # Track the current release by default so a fresh install is not stuck on
 # whatever was newest when this was written. Pin MINIFLUX_VERSION in hub.env for
