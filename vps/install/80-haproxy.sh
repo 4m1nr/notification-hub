@@ -45,8 +45,11 @@ PASSTHROUGH_TABLE=/etc/haproxy/passthrough.conf HAPROXY_MAIN_CFG=/nonexistent \
 # from EXTRAOPTS, so append rather than replace — otherwise a future package
 # update that adds an option there would be silently dropped.
 # ---------------------------------------------------------------------------
+# systemctl quotes any value containing a space ("EXTRAOPTS=-S /run/..."), so
+# match both the quoted and the bare form.
 CURRENT_EXTRAOPTS="$(systemctl show haproxy -p Environment --value 2>/dev/null \
-  | tr ' ' '\n' | sed -n 's/^EXTRAOPTS=//p' | head -n1)"
+  | grep -oE '"EXTRAOPTS=[^"]*"|(^| )EXTRAOPTS=[^ ]*' | head -n1 \
+  | sed -E 's/^ ?"?EXTRAOPTS=//; s/"$//')"
 CURRENT_EXTRAOPTS="${CURRENT_EXTRAOPTS:--S /run/haproxy-master.sock}"
 
 if [[ "$CURRENT_EXTRAOPTS" != *"-f /etc/haproxy/conf.d"* ]]; then
