@@ -60,6 +60,16 @@ EOF
 SYSTEMD_DIRTY=1
 systemd_reload
 
+# Ubuntu confines rsyslogd with AppArmor. It needs the loopback listener's
+# certificate, and to run the omprog handler: ux rather than Ux, because the
+# handler takes its ntfy credentials from the environment rsyslog passes down,
+# which the scrubbing variant would strip.
+apparmor_local_rules usr.sbin.rsyslogd <<EOF
+/etc/certs/syslog/ r,
+/etc/certs/syslog/** r,
+$HUB_PREFIX/bin/syslog-ntfy ux,
+EOF
+
 if ! out="$(rsyslogd -N1 -f /etc/rsyslog.conf 2>&1)"; then
   printf '%s\n' "$out" | grep -viE 'version [0-9]|End of config validation' >&2
   die "rsyslog configuration is invalid"
