@@ -85,12 +85,19 @@ syntax for bearer-token auth. Writing `:<token>@` instead makes Apprise send
 basic auth with an empty username, which ntfy rejects with 403. Use **Send
 test notification** on the settings page to confirm before relying on it.
 
-Useful notification body, which gives you the diff on the lock screen:
+Set **Notification Format** to **Text**. ntfy renders plain text, so the HTML
+format shows up as literal tags on the phone. A body that gives you the diff on
+the lock screen without the noise of the default template:
 
 ```
 Title:  {{watch_title}}
 Body:   {{diff}}
+
+        {{watch_url}}
 ```
+
+Appending `?click={{watch_url}}` to the notification URL makes tapping the
+notification open the page.
 
 ## Troubleshooting
 
