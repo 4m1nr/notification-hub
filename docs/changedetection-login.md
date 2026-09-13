@@ -76,13 +76,14 @@ Set the notification URL on the watch (or globally under **Settings →
 Notifications**):
 
 ```
-ntfys://:<NTFY_TOKEN_SITECHANGES>@ntfy.example.com/site-changes
+ntfys://<NTFY_TOKEN_SITECHANGES>@ntfy.example.com/site-changes
 ```
 
 Two details that matter: `ntfys` with the *s*, because the server is behind
-HTTPS, and the empty username before the colon — that is Apprise's syntax for
-token-based ntfy auth rather than username/password. Use **Send test
-notification** on the settings page to confirm before relying on it.
+HTTPS, and the token standing **alone** before the `@` — that is Apprise's
+syntax for bearer-token auth. Writing `:<token>@` instead makes Apprise send
+basic auth with an empty username, which ntfy rejects with 403. Use **Send
+test notification** on the settings page to confirm before relying on it.
 
 Useful notification body, which gives you the diff on the lock screen:
 
