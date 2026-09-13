@@ -60,7 +60,10 @@ EOF
 SYSTEMD_DIRTY=1
 systemd_reload
 
-rsyslogd -N1 -f /etc/rsyslog.conf >/dev/null 2>&1 || die "rsyslog configuration is invalid"
+if ! out="$(rsyslogd -N1 -f /etc/rsyslog.conf 2>&1)"; then
+  printf '%s\n' "$out" | grep -viE 'version [0-9]|End of config validation' >&2
+  die "rsyslog configuration is invalid"
+fi
 
 systemctl restart rsyslog
 sleep 1
