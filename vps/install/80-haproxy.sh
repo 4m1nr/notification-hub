@@ -25,6 +25,25 @@ ensure_dir /etc/certs/proxy/combined 0750 root:haproxy
 install_file "$REPO_ROOT/vps/haproxy/passthrough.sh" "$HUB_PREFIX/bin/passthrough.sh" 0750 root:root || true
 ensure_dir /etc/haproxy/conf.d 0755 root:root
 
+# Ubuntu ships an AppArmor profile for haproxy that only permits reading
+# /etc/haproxy/* — flat files, so the conf.d directory is denied even to root.
+# The profile includes local/usr.sbin.haproxy for exactly this kind of site
+# addition, and that file survives package upgrades.
+AA_PROFILE=/etc/apparmor.d/usr.sbin.haproxy
+AA_LOCAL=/etc/apparmor.d/local/usr.sbin.haproxy
+if [[ -f "$AA_PROFILE" ]] && command -v apparmor_parser >/dev/null; then
+  if ! grep -qF '/etc/haproxy/conf.d/** r,' "$AA_LOCAL" 2>/dev/null; then
+    log "allowing haproxy to read /etc/haproxy/conf.d under AppArmor"
+    ensure_dir "$(dirname "$AA_LOCAL")" 0755 root:root
+    cat >> "$AA_LOCAL" <<'EOF'
+# notification-hub: passthrough backends live in a subdirectory
+/etc/haproxy/conf.d/ r,
+/etc/haproxy/conf.d/** r,
+EOF
+    apparmor_parser -r "$AA_PROFILE" || warn "could not reload the haproxy AppArmor profile"
+  fi
+fi
+
 if [[ ! -f /etc/haproxy/passthrough.conf ]]; then
   install_file "$REPO_ROOT/vps/haproxy/passthrough.conf.example" \
     /etc/haproxy/passthrough.conf 0640 root:root || true
@@ -81,7 +100,12 @@ ADMIN_UI_USER="$(set_env_var ADMIN_UI_USER admin)"
 ADMIN_UI_PASSWORD="$(set_env_var ADMIN_UI_PASSWORD "$(gen_secret 24)")"
 ADMIN_UI_PASSWORD_HASH="$(openssl passwd -6 "$ADMIN_UI_PASSWORD")"
 
-TMP_CFG="$(mktemp)"
+# The candidate is rendered next to the live config rather than under /tmp:
+# Ubuntu confines haproxy with an AppArmor profile that only lets it read
+# /etc/haproxy/*, and the validation below has to be able to open the file.
+TMP_CFG=/etc/haproxy/haproxy.cfg.candidate
+trap 'rm -f "$TMP_CFG"' EXIT
+install -o root -g haproxy -m 0640 /dev/null "$TMP_CFG"
 envsubst < "$REPO_ROOT/vps/haproxy/haproxy.cfg.tmpl" > "$TMP_CFG"
 
 # The crypt hash contains '$' sequences that envsubst would eat, so it is
@@ -97,14 +121,13 @@ with open(path, 'w') as fh:
 PY
 
 if grep -qE '@@[A-Za-z_]+@@' "$TMP_CFG"; then
-  rm -f "$TMP_CFG"
   die "unsubstituted @@placeholders@@ remain in the rendered haproxy config"
 fi
 
 # Validate the candidate before it replaces the live config — a bad config here
 # takes every service offline at once.
 haproxy -c -f "$TMP_CFG" -f /etc/haproxy/conf.d >/dev/null \
-  || { rm -f "$TMP_CFG"; die "rendered haproxy config is invalid"; }
+  || die "rendered haproxy config is invalid"
 
 if [[ -f /etc/haproxy/haproxy.cfg ]] && cmp -s "$TMP_CFG" /etc/haproxy/haproxy.cfg; then
   log "haproxy config unchanged"
