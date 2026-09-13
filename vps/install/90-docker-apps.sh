@@ -3,7 +3,7 @@
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 require_root
 load_env
-require_vars CD_DOMAIN HC_DOMAIN PG_PORT PG_HEALTHCHECKS_PASSWORD
+require_vars CD_DOMAIN HC_DOMAIN CD_PORT HC_PORT PG_PORT PG_HEALTHCHECKS_PASSWORD
 
 command -v docker >/dev/null || die "docker not installed; run 10-packages.sh first"
 
@@ -28,18 +28,19 @@ docker compose pull --quiet
 log "starting containers"
 docker compose up -d
 
+# Django only answers requests whose Host is in ALLOWED_HOSTS (= HC_DOMAIN), so
+# probing the loopback port needs the public hostname in the header.
+hc_up() { curl -fs -m "${1:-3}" -o /dev/null -H "Host: ${HC_DOMAIN}" "http://127.0.0.1:${HC_PORT}/"; }
+cd_up() { curl -fs -m "${1:-3}" -o /dev/null "http://127.0.0.1:${CD_PORT}/"; }
+
 # Give healthchecks time to run its migrations against the shared database.
 for _ in $(seq 1 30); do
-  if curl -fsS -m 3 -o /dev/null http://127.0.0.1:8000/; then break; fi
+  if hc_up; then break; fi
   sleep 2
 done
 
-if ! curl -fsS -m 5 -o /dev/null http://127.0.0.1:8000/; then
-  die "healthchecks is not answering — check: docker compose -f /etc/notification-hub/docker/docker-compose.yml logs healthchecks"
-fi
-if ! curl -fsS -m 5 -o /dev/null http://127.0.0.1:5000/; then
-  die "changedetection is not answering — check: docker compose -f /etc/notification-hub/docker/docker-compose.yml logs changedetection"
-fi
+hc_up 5 || die "healthchecks is not answering on 127.0.0.1:${HC_PORT} — check: docker compose -f /etc/notification-hub/docker/docker-compose.yml logs healthchecks"
+cd_up 5 || die "changedetection is not answering on 127.0.0.1:${CD_PORT} — check: docker compose -f /etc/notification-hub/docker/docker-compose.yml logs changedetection"
 
 log "containers are up"
 log "create the healthchecks superuser with:"
