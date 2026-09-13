@@ -38,13 +38,19 @@ apply() {
       systemctl restart rsyslog
       ;;
     tunnel)
-      unit="${TUNNEL_SERVICE_UNIT:-}"
-      if [[ -z "$unit" ]]; then
-        log "TUNNEL_SERVICE_UNIT is not set in $HUB_ENV; skipping tunnel restart"
+      # Tunnel software often ships its own restart entry point (a node CLI, a
+      # compose project) that does more than bounce a unit, so a full command
+      # takes precedence over a bare unit name.
+      if [[ -n "${TUNNEL_RESTART_COMMAND:-}" ]]; then
+        log "restarting tunnel: $TUNNEL_RESTART_COMMAND"
+        bash -c "$TUNNEL_RESTART_COMMAND"
+      elif [[ -n "${TUNNEL_SERVICE_UNIT:-}" ]]; then
+        log "restarting $TUNNEL_SERVICE_UNIT"
+        systemctl restart "$TUNNEL_SERVICE_UNIT"
+      else
+        log "neither TUNNEL_RESTART_COMMAND nor TUNNEL_SERVICE_UNIT is set in $HUB_ENV; skipping tunnel restart"
         return 1
       fi
-      log "restarting $unit"
-      systemctl restart "$unit"
       ;;
     *)
       log "unknown service '$1' — leaving its flag in place for inspection"

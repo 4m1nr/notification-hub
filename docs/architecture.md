@@ -120,7 +120,7 @@ every 6h    check-cert-renewal.sh
 daily @04:30  apply-pending-restarts.sh
                 ├─ haproxy  → systemctl reload   (zero-downtime)
                 ├─ rsyslog  → systemctl restart
-                └─ tunnel   → systemctl restart
+                └─ tunnel   → TUNNEL_RESTART_COMMAND, or systemctl restart
 ```
 
 Three properties fall out of this split:
