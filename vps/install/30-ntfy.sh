@@ -39,8 +39,13 @@ systemctl is-active --quiet ntfy || die "ntfy failed to start — check: journal
 TOPICS=(mail mattermost rss syslog site-changes system backup)
 
 # ntfy's CLI reads /etc/ntfy/server.yml, so it operates on PostgreSQL too.
-# It prints the listing to stderr, not stdout.
-ntfy_user_exists() { ntfy user list 2>&1 | grep -qE "^user ${1} "; }
+# It prints the listing to stderr, not stdout. Capture it before grepping: with
+# pipefail, grep -q exiting early would SIGPIPE ntfy and fail the pipeline.
+ntfy_user_exists() {
+  local listing
+  listing="$(ntfy user list 2>&1)"
+  grep -qE "^user ${1} " <<<"$listing"
+}
 
 # The phone reads everything; nothing it holds can publish.
 PHONE_PASSWORD="$(set_env_var NTFY_PHONE_PASSWORD "$(gen_secret 24)")"
