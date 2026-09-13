@@ -152,6 +152,43 @@ explicit denies for 6514 and 5432. Read each against your other services first �
 in particular, default-deny will cut off anything that lacks an explicit allow
 rule.
 
+## Behind Cloudflare
+
+Any of the four hub domains can be orange-clouded. Traffic then arrives from a
+Cloudflare edge address, with the real client in `CF-Connecting-IP`. HAProxy
+trusts that header **only when the TCP peer is inside Cloudflare's published
+ranges**, and rewrites the connection's source address from it (`set-src`), so
+everything downstream — the stick tables, the abuse flag, the log line fail2ban
+parses, the `X-Forwarded-For` ntfy rate-limits on — keys on the real client
+instead of on a handful of shared edge addresses. From any other peer the
+header is deleted, so it cannot be forged by connecting directly.
+
+The ranges live in `/etc/haproxy/cloudflare-ips.lst`, fetched from
+`cloudflare.com/ips-v4` and `ips-v6` by `cloudflare-ips.timer` once a week (and
+once at install). The fetch refuses anything that does not look like a list of
+CIDRs, so an outage page cannot become the trust list, and a stale list fails
+closed: an unlisted edge is treated as an ordinary client, which degrades rate
+limiting but never opens a spoofing hole.
+
+Cloudflare's SSL mode must be **Full (strict)** — the origin has a real
+certificate, and "Flexible" would talk plain HTTP to a port that only redirects.
+Leave "Always Use HTTPS" off, or grey-cloud the record, while issuing a
+certificate: the HTTP-01 challenge must reach `:80` as HTTP.
+
+What changes with Cloudflare in front:
+
+- **fail2ban's firewall bans stop working for proxied domains.** They ban the
+  real address at the host firewall, but the packets come from Cloudflare. The
+  HAProxy tier still works, because it acts on the rewritten address at the
+  HTTP layer. Blocking at the edge would need fail2ban's Cloudflare action and
+  an API token; not set up here.
+- **The phone's ntfy stream passes through Cloudflare's proxy.** ntfy's 45 s
+  keepalive is well inside Cloudflare's idle limit, and WebSockets are
+  supported, so it works — but it is one more thing between you and a
+  notification.
+- **TLS passthrough domains cannot be proxied.** Cloudflare terminates TLS
+  itself, which is exactly what passthrough exists to avoid.
+
 ## Coexisting with what is already on the box
 
 This stack is designed to be installed onto a VPS that already runs other

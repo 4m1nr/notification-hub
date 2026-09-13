@@ -43,6 +43,16 @@ if [[ ! -f /etc/haproxy/passthrough.conf ]]; then
 fi
 [[ -f /etc/haproxy/sni-passthrough.map ]] || install -m 0644 /dev/null /etc/haproxy/sni-passthrough.map
 
+# Cloudflare edge ranges, for domains proxied through Cloudflare. The config
+# references the file, so it must exist even if the first fetch fails (no
+# network at install time); an empty list simply trusts nobody.
+install_file "$REPO_ROOT/vps/haproxy/cloudflare-ips.sh" "$HUB_PREFIX/bin/cloudflare-ips.sh" 0755 root:root || true
+[[ -f /etc/haproxy/cloudflare-ips.lst ]] || install -o root -g haproxy -m 0640 /dev/null /etc/haproxy/cloudflare-ips.lst
+"$HUB_PREFIX/bin/cloudflare-ips.sh" || warn "could not refresh Cloudflare ranges; cloudflare-ips.timer will retry"
+install_unit "$REPO_ROOT/vps/systemd/cloudflare-ips.service"
+install_unit "$REPO_ROOT/vps/systemd/cloudflare-ips.timer"
+systemd_reload
+
 # Regenerate from the table. Done before the main config is validated, so the
 # check below covers the passthrough backends too.
 PASSTHROUGH_TABLE=/etc/haproxy/passthrough.conf HAPROXY_MAIN_CFG=/nonexistent \
@@ -154,6 +164,7 @@ else
 fi
 sleep 1
 systemctl is-active --quiet haproxy || die "haproxy failed to start"
+enable_now cloudflare-ips.timer
 
 log "haproxy ready — routing ${NTFY_DOMAIN}, ${MINIFLUX_DOMAIN}, ${CD_DOMAIN}, ${HC_DOMAIN}"
 log ""

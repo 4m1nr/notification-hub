@@ -1,0 +1,9 @@
+[Unit]
+Description=Refresh the Cloudflare edge ranges HAProxy trusts
+Documentation=https://github.com/4m1nr/notification-hub
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/notification-hub/bin/cloudflare-ips.sh

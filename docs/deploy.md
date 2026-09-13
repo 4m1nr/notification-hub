@@ -254,6 +254,13 @@ If HAProxy will not start, it is almost always the certificate directory:
 `/etc/certs/proxy/combined/` must contain only `.pem` files, never a
 subdirectory.
 
+**Cloudflare.** The hub domains may be proxied (orange cloud). HAProxy already
+trusts `CF-Connecting-IP` from Cloudflare's ranges and nothing else; set the
+zone's SSL mode to **Full (strict)**. The ranges refresh weekly via
+`cloudflare-ips.timer`. See *Behind Cloudflare* in `docs/security.md` for what
+that changes — chiefly that fail2ban's firewall bans no longer bite for proxied
+traffic, while HAProxy's own limits still do.
+
 ---
 
 ## 7. Other services already on this box

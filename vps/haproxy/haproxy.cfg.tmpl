@@ -156,6 +156,19 @@ frontend https_in
     # http-keep-alive 15s', both inherited from defaults.
     timeout client 12h
 
+    # ---- Cloudflare ----
+    # A domain proxied through Cloudflare arrives from a Cloudflare edge, with
+    # the real client in CF-Connecting-IP. The header is trusted only when the
+    # peer is in Cloudflare's published ranges (refreshed weekly by
+    # cloudflare-ips.timer), so nobody else can forge it. set-src rewrites the
+    # source for everything that follows — the stick tables, the abuse flags,
+    # the log line fail2ban reads, and X-Forwarded-For — so they all key on
+    # the real client rather than on a handful of shared edge addresses.
+    acl from_cloudflare src -f /etc/haproxy/cloudflare-ips.lst
+    acl has_cf_ip       req.hdr(CF-Connecting-IP) -m found
+    http-request set-src req.hdr(CF-Connecting-IP) if from_cloudflare has_cf_ip
+    http-request del-header CF-Connecting-IP unless from_cloudflare
+
     http-request set-header X-Forwarded-Proto https
     http-request set-header X-Forwarded-For %[src]
 

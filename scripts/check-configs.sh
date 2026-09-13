@@ -70,6 +70,8 @@ chmod -R a+rX "$WORK/conf.d" "$WORK/sni-passthrough.map"
 # daemon a private /tmp, and a same-path mount under /tmp is then invisible
 # inside the container.
 sed -i "s|/etc/haproxy/sni-passthrough.map|/cfg/sni-passthrough.map|g" "$WORK/haproxy.cfg"
+printf '173.245.48.0/20\n2400:cb00::/32\n' > "$WORK/cloudflare-ips.lst"
+sed -i "s|/etc/haproxy/cloudflare-ips.lst|/cfg/cloudflare-ips.lst|g" "$WORK/haproxy.cfg"
 sed -i "s|@@ADMIN_UI_USER@@|admin|; s|@@ADMIN_UI_PASSWORD_HASH@@|$(openssl passwd -6 test)|" "$WORK/haproxy.cfg"
 sed -i "s|/etc/certs/proxy/combined/|/cfg/certs/|" "$WORK/haproxy.cfg"
 # Load conf.d as a second -f, exactly as the systemd unit does.
