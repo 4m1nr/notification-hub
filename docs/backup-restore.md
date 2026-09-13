@@ -12,6 +12,9 @@ deliberately not the same as `CERT_RESTART_TIME`):
 3. Configuration: ntfy `server.yml`, `miniflux.conf`, `haproxy.cfg`, the rsyslog
    drop-ins, the systemd units, `domains.map`, the cert scripts, and `hub.env`.
 4. `tar czf`, then **`age` encryption**, then upload to a private Telegram chat.
+   The caption and the file name carry `BACKUP_LABEL` (default
+   `notification-hub@<hostname>`), so a chat that collects backups from
+   several systems says which is which.
 5. On success, ping the `backup` check. On *any* failure, publish immediately to
    the ntfy `backup` topic and mark the check failed.
 
@@ -59,11 +62,11 @@ Download the archive (or all its parts) from the Telegram chat.
 
 ```bash
 # Single file
-age -d -i backup-key.txt -o backup.tar.gz backup-2026-09-07.tar.gz.age
+age -d -i backup-key.txt -o backup.tar.gz notification-hub_vps-backup-2026-09-07.tar.gz.age
 
 # Split into parts — concatenate in order FIRST, then decrypt. Each part is a
 # fragment of one ciphertext, not an archive of its own.
-cat backup-2026-09-07.tar.gz.age.part* > backup.tar.gz.age
+cat notification-hub_vps-backup-2026-09-07.tar.gz.age.part* > backup.tar.gz.age
 age -d -i backup-key.txt -o backup.tar.gz backup.tar.gz.age
 
 mkdir restore && tar xzf backup.tar.gz -C restore
@@ -133,7 +136,7 @@ A backup you have never restored is a hypothesis. Check it now:
 sudo /opt/notification-hub/bin/backup.sh --dry-run
 
 # Confirm the archive is complete and readable with your key
-age -d -i backup-key.txt /var/backups/notification-hub/backup-*.tar.gz.age | tar tzf - | head -30
+age -d -i backup-key.txt /var/backups/notification-hub/*backup-*.tar.gz.age | tar tzf - | head -30
 
 # Confirm the failure path alerts: break the token, run, expect a `backup` notification
 sudo TELEGRAM_BOT_TOKEN=invalid /opt/notification-hub/bin/backup.sh

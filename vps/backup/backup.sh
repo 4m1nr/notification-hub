@@ -26,6 +26,11 @@ DRY_RUN=0
 [[ "${1:-}" == "--dry-run" ]] && DRY_RUN=1
 
 STAMP="$(date +%F)"
+# Names this backup in the Telegram caption and the file name, so a chat that
+# receives backups from several systems stays readable.
+BACKUP_LABEL="${BACKUP_LABEL:-notification-hub@$(hostname -s)}"
+# The label doubles as a file-name prefix, so keep it to safe characters there.
+LABEL_SLUG="$(printf '%s' "$BACKUP_LABEL" | tr -c 'A-Za-z0-9._-' '_')"
 STAGE=""
 STEP="startup"
 
@@ -169,7 +174,7 @@ EOF
 
 #--- Archive and encrypt -----------------------------------------------------
 STEP="archive"
-ARCHIVE="$BACKUP_DIR/backup-${STAMP}.tar.gz"
+ARCHIVE="$BACKUP_DIR/${LABEL_SLUG}-backup-${STAMP}.tar.gz"
 log "creating $ARCHIVE"
 tar czf "$ARCHIVE" -C "$STAGE" .
 chmod 0600 "$ARCHIVE"
@@ -219,19 +224,19 @@ if (( SIZE_BYTES > CHUNK_LIMIT )); then
   for part in "$PARTS_DIR"/*; do
     index=$(( index + 1 ))
     log "uploading part $index/$total"
-    send_document "$part" "backup ${STAMP} — part ${index} of ${total} (cat all parts in order, then decrypt)"
+    send_document "$part" "📦 ${BACKUP_LABEL} — backup ${STAMP} — part ${index} of ${total} (cat all parts in order, then decrypt)"
   done
   log "uploaded $total parts"
 else
   log "uploading single archive"
-  send_document "$ENCRYPTED" "backup ${STAMP} — $(human_size "$SIZE_BYTES")"
+  send_document "$ENCRYPTED" "📦 ${BACKUP_LABEL} — backup ${STAMP} — $(human_size "$SIZE_BYTES")"
 fi
 
 #--- Retention and success ---------------------------------------------------
 # A short local window is a much faster restore path than pulling from Telegram.
 STEP="retention"
-find "$BACKUP_DIR" -maxdepth 1 -name 'backup-*.tar.gz.age' -mtime "+${RETENTION_DAYS}" -delete
-log "local retention: $(find "$BACKUP_DIR" -maxdepth 1 -name 'backup-*.age' | wc -l) archive(s) kept"
+find "$BACKUP_DIR" -maxdepth 1 -name '*backup-*.tar.gz.age' -mtime "+${RETENTION_DAYS}" -delete
+log "local retention: $(find "$BACKUP_DIR" -maxdepth 1 -name '*backup-*.age' | wc -l) archive(s) kept"
 
 STEP="healthchecks ping"
 if [[ -n "${HC_PING_URL_BACKUP:-}" ]]; then
