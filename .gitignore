@@ -27,3 +27,7 @@ age-key.txt
 
 # Original project spec — kept locally, not published
 Project.md
+
+# age private keys must never enter the repo
+backup-key.txt
+*.age-key
