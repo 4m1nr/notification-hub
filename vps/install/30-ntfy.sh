@@ -5,15 +5,18 @@ require_root
 load_env
 require_vars NTFY_DOMAIN PG_NTFY_PASSWORD
 
-# Official apt repository — ntfy is not in Ubuntu's archive.
+# Official apt repository — ntfy is not in Ubuntu's archive. The repo moved from
+# archive.heckel.io to archive.ntfy.sh in September 2025; the old host no longer
+# resolves, so clean up anything an earlier run left behind. The keyring is
+# already binary, hence no dearmor.
 if ! command -v ntfy >/dev/null; then
   log "adding ntfy apt repository"
+  rm -f /etc/apt/keyrings/archive.heckel.io.gpg /etc/apt/sources.list.d/archive.heckel.io.list
   install -m 0755 -d /etc/apt/keyrings
-  curl -fsSL https://archive.heckel.io/apt/pubkey.txt \
-    | gpg --dearmor -o /etc/apt/keyrings/archive.heckel.io.gpg
-  chmod a+r /etc/apt/keyrings/archive.heckel.io.gpg
-  cat > /etc/apt/sources.list.d/archive.heckel.io.list <<'EOF'
-deb [arch=amd64 signed-by=/etc/apt/keyrings/archive.heckel.io.gpg] https://archive.heckel.io/apt debian main
+  curl -fsSL -o /etc/apt/keyrings/ntfy.gpg https://archive.ntfy.sh/apt/keyring.gpg
+  chmod a+r /etc/apt/keyrings/ntfy.gpg
+  cat > /etc/apt/sources.list.d/ntfy.list <<'EOF'
+deb [arch=amd64 signed-by=/etc/apt/keyrings/ntfy.gpg] https://archive.ntfy.sh/apt stable main
 EOF
   apt-get update -qq
   apt_ensure ntfy
