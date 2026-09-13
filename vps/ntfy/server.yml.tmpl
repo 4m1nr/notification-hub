@@ -21,6 +21,11 @@ attachment-file-size-limit: "15M"
 # secrets, and these topics carry mail subjects and work chat.
 auth-default-access: "deny-all"
 
+# The web app hides its Sign in button unless this is on. Signup stays off:
+# accounts are created only by 30-ntfy.sh.
+enable-login: true
+enable-signup: false
+
 # Keep messages around long enough for the phone to catch up after being offline.
 cache-duration: "24h"
 
