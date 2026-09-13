@@ -43,9 +43,19 @@ systemd_reload
 
 # Only start services whose credentials have actually been filled in — starting a
 # watcher with a blank password just produces a restart loop.
+env_has() { grep -qE "^${1}=.+" "$2"; }
+credentials_present() {
+  local svc="$1" env_file="$2"
+  case "$svc" in
+    mail-watcher)       env_has IMAP_PASSWORD "$env_file" ;;
+    # A PAT, or a username/password login where PATs are disabled.
+    mattermost-watcher) env_has MATTERMOST_TOKEN "$env_file" \
+                        || { env_has MATTERMOST_USERNAME "$env_file" && env_has MATTERMOST_PASSWORD "$env_file"; } ;;
+  esac
+}
 for svc in mail-watcher mattermost-watcher; do
   env_file="/etc/notification-hub/${svc}.env"
-  if grep -qE '^(IMAP_PASSWORD|MATTERMOST_TOKEN)=$' "$env_file"; then
+  if ! credentials_present "$svc" "$env_file"; then
     warn "$svc not started: credentials are still blank in $env_file"
     continue
   fi
