@@ -4,11 +4,12 @@
 # Rendered from vps/haproxy/haproxy.cfg.tmpl. Two substitution styles are used
 # here on purpose:
 #   dollar-brace NAME   expanded by envsubst from hub.env
-#   @@NAME@@            substituted by 80-haproxy.sh after envsubst has run
-# The password hash uses the @@ form because crypt hashes contain '$' characters
-# that envsubst would mangle into empty variable expansions.
-# (This comment avoids writing the brace form literally, because the renderer
-# scans for it to check every referenced variable is actually defined.)
+#   at-at NAME at-at    substituted by 80-haproxy.sh after envsubst has run
+# The password hash uses the at-at form because crypt hashes contain '$'
+# characters that envsubst would mangle into empty variable expansions.
+# (This comment avoids writing either form literally: the renderer scans for
+# the brace form to check every variable is defined, and 80-haproxy.sh scans
+# the output for leftover at-at placeholders.)
 
 global
     log /dev/log local0

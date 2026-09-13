@@ -93,7 +93,7 @@ with open(path, 'w') as fh:
     fh.write(text)
 PY
 
-if grep -q '@@' "$TMP_CFG"; then
+if grep -qE '@@[A-Za-z_]+@@' "$TMP_CFG"; then
   rm -f "$TMP_CFG"
   die "unsubstituted @@placeholders@@ remain in the rendered haproxy config"
 fi
