@@ -39,7 +39,8 @@ systemctl is-active --quiet ntfy || die "ntfy failed to start — check: journal
 TOPICS=(mail mattermost rss syslog site-changes system backup)
 
 # ntfy's CLI reads /etc/ntfy/server.yml, so it operates on PostgreSQL too.
-ntfy_user_exists() { ntfy user list 2>/dev/null | grep -qE "^user ${1}\b"; }
+# It prints the listing to stderr, not stdout.
+ntfy_user_exists() { ntfy user list 2>&1 | grep -qE "^user ${1} "; }
 
 # The phone reads everything; nothing it holds can publish.
 PHONE_PASSWORD="$(set_env_var NTFY_PHONE_PASSWORD "$(gen_secret 24)")"
