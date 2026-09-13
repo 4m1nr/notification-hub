@@ -208,11 +208,15 @@ frontend https_in
     # ---- Login forms get their own, far tighter budget ----
     # Miniflux posts its login to /, healthchecks to /accounts/login/,
     # changedetection to /login. Ten attempts per five minutes per address.
+    # The / rule is scoped to Miniflux's host: ntfy's JSON publish endpoint is
+    # also POST /, and the watchers would be throttled as if they were
+    # guessing passwords.
     acl is_post          method POST
-    acl is_login_path    path / path_beg /accounts/login /login
+    acl is_login_path    path_beg /accounts/login /login
+    acl is_root          path /
     acl login_flood      sc1_http_req_rate(st_logins) gt 10
-    http-request track-sc1 src table st_logins if is_post is_login_path
-    http-request deny deny_status 429 if is_post is_login_path login_flood
+    http-request track-sc1 src table st_logins if is_post is_login_path || is_post is_root host_rss
+    http-request deny deny_status 429 if login_flood is_post is_login_path || login_flood is_post is_root host_rss
 
     # ---- Admin UIs sit behind basic auth ----
     # healthchecks' ping and API endpoints stay open: the office PC checks in on
