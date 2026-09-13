@@ -13,6 +13,12 @@ behind-proxy: true
 # auth, and cache-file / auth-file / web-push-file must NOT be set alongside it.
 database-url: "postgres://ntfy:${PG_NTFY_PASSWORD}@/ntfy?host=/var/run/postgresql&port=${PG_PORT}"
 
+# A body larger than this is delivered as a .txt attachment instead of inline
+# text. ntfy's default of 4k exists for FCM/APNS payload limits, which do not
+# apply to a self-hosted server the apps connect to directly; changedetection
+# diffs routinely exceed it.
+message-size-limit: "${NTFY_MESSAGE_SIZE_LIMIT}"
+
 attachment-cache-dir: "/var/lib/ntfy/attachments"
 attachment-total-size-limit: "1G"
 attachment-file-size-limit: "15M"

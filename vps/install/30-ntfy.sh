@@ -4,6 +4,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 require_root
 load_env
 require_vars NTFY_DOMAIN PG_PORT PG_NTFY_PASSWORD
+export NTFY_MESSAGE_SIZE_LIMIT="${NTFY_MESSAGE_SIZE_LIMIT:-16k}"
 
 # Official apt repository — ntfy is not in Ubuntu's archive. The repo moved from
 # archive.heckel.io to archive.ntfy.sh in September 2025; the old host no longer
