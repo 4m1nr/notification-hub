@@ -6,15 +6,18 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -23,6 +26,11 @@ import (
 
 	"github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapclient"
+	"github.com/emersion/go-message/mail"
+
+	// Registers the legacy charsets (windows-1256, iso-8859-*, ...) that office
+	// mail still arrives in, so go-message can decode them.
+	_ "github.com/emersion/go-message/charset"
 
 	"github.com/4m1nr/notification-hub/internal/config"
 	"github.com/4m1nr/notification-hub/internal/hc"
@@ -34,6 +42,21 @@ import (
 // mailbox that receives 200 messages at once should produce a summary, not 200
 // buzzes.
 const maxBatch = 10
+
+// maxPreview bounds how much of the body ends up in the notification, and
+// maxFetch how much of each message is pulled from the server to build it: the
+// preview needs the first text part, not a 20 MB attachment.
+const (
+	maxPreview = 300
+	maxFetch   = 64 * 1024
+)
+
+// bodySection is the fetch item for the preview. Peek, so reading a message
+// here does not mark it as seen in the mailbox.
+var bodySection = &imap.FetchItemBodySection{
+	Peek:    true,
+	Partial: &imap.SectionPartial{Offset: 0, Size: maxFetch},
+}
 
 type watcher struct {
 	server   string
@@ -299,7 +322,11 @@ func (w *watcher) announce(ctx context.Context, c *imapclient.Client, from, to u
 	var seqSet imap.SeqSet
 	seqSet.AddRange(from, to)
 
-	messages, err := c.Fetch(seqSet, &imap.FetchOptions{Envelope: true, UID: true}).Collect()
+	messages, err := c.Fetch(seqSet, &imap.FetchOptions{
+		Envelope:    true,
+		UID:         true,
+		BodySection: []*imap.FetchItemBodySection{bodySection},
+	}).Collect()
 	if err != nil {
 		return fmt.Errorf("fetch %d:%d: %w", from, to, err)
 	}
@@ -312,10 +339,16 @@ func (w *watcher) announce(ctx context.Context, c *imapclient.Client, from, to u
 		if subject == "" {
 			subject = "(no subject)"
 		}
+		// Subject as the title, then who it is from and how it starts — enough
+		// to decide from the lock screen whether it can wait.
+		body := senderLine(m.Envelope)
+		if p := preview(m.FindBodySection(bodySection)); p != "" {
+			body += "\n\n" + p
+		}
 		if err := w.ntfy.Publish(ctx, ntfy.Message{
 			Topic:    w.topic,
-			Title:    sender(m.Envelope),
-			Message:  subject,
+			Title:    subject,
+			Message:  body,
 			Tags:     []string{"envelope"},
 			Priority: 3,
 		}); err != nil {
@@ -326,23 +359,99 @@ func (w *watcher) announce(ctx context.Context, c *imapclient.Client, from, to u
 	return nil
 }
 
-// sender renders the From header as a display name, falling back to the address.
-func sender(env *imap.Envelope) string {
+// senderLine renders the From header as "Name <addr>", or whichever half exists.
+func senderLine(env *imap.Envelope) string {
 	addrs := env.From
 	if len(addrs) == 0 {
 		addrs = env.Sender
 	}
 	if len(addrs) == 0 {
-		return "New mail"
+		return "From: (unknown sender)"
 	}
 	a := addrs[0]
-	if name := strings.TrimSpace(a.Name); name != "" {
-		return name
+	name, addr := strings.TrimSpace(a.Name), a.Addr()
+	switch {
+	case name != "" && addr != "":
+		return fmt.Sprintf("From: %s <%s>", name, addr)
+	case name != "":
+		return "From: " + name
+	case addr != "":
+		return "From: " + addr
 	}
-	if addr := a.Addr(); addr != "" {
-		return addr
+	return "From: (unknown sender)"
+}
+
+// preview extracts the first text part of a raw RFC 5322 message and squashes
+// it into one short paragraph. Plain text is preferred; HTML-only mail is
+// crudely de-tagged. The input may be truncated (see maxFetch), so a parse
+// error after some text has been found is not a failure.
+func preview(raw []byte) string {
+	if len(raw) == 0 {
+		return ""
 	}
-	return "New mail"
+	mr, err := mail.CreateReader(bytes.NewReader(raw))
+	if err != nil {
+		return ""
+	}
+	var html string
+	for {
+		part, err := mr.NextPart()
+		if err != nil {
+			break
+		}
+		h, ok := part.Header.(*mail.InlineHeader)
+		if !ok {
+			continue // attachment
+		}
+		ctype, _, _ := h.ContentType()
+		text, _ := io.ReadAll(io.LimitReader(part.Body, maxFetch))
+		switch ctype {
+		case "text/plain":
+			if s := squash(string(text)); s != "" {
+				return s
+			}
+		case "text/html":
+			if html == "" {
+				html = string(text)
+			}
+		}
+	}
+	return squash(stripTags(html))
+}
+
+// squash collapses whitespace and truncates to maxPreview runes.
+func squash(s string) string {
+	s = strings.Join(strings.Fields(s), " ")
+	if r := []rune(s); len(r) > maxPreview {
+		return string(r[:maxPreview]) + "…"
+	}
+	return s
+}
+
+var (
+	tagRe    = regexp.MustCompile(`(?is)<(script|style)\b.*?</(script|style)>|<[^>]*>`)
+	entityRe = regexp.MustCompile(`&(nbsp|amp|lt|gt|quot|#39);`)
+)
+
+func stripTags(s string) string {
+	s = tagRe.ReplaceAllString(s, " ")
+	return entityRe.ReplaceAllStringFunc(s, func(e string) string {
+		switch e {
+		case "&nbsp;":
+			return " "
+		case "&amp;":
+			return "&"
+		case "&lt;":
+			return "<"
+		case "&gt;":
+			return ">"
+		case "&quot;":
+			return "\""
+		case "&#39;":
+			return "'"
+		}
+		return e
+	})
 }
 
 // buildTLSConfig returns nil when every option is at its default, so the
