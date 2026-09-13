@@ -73,7 +73,10 @@ Environment="EXTRAOPTS=$CURRENT_EXTRAOPTS -f /etc/haproxy/conf.d"
 EOF
   SYSTEMD_DIRTY=1
   systemd_reload
-  log "haproxy will now also load /etc/haproxy/conf.d"
+  # A reload re-execs the master with the command line it was started with,
+  # so the new -f argument only takes effect on a full restart.
+  UNIT_CMDLINE_CHANGED=1
+  log "haproxy will now also load /etc/haproxy/conf.d (needs a restart, not a reload)"
 fi
 
 # HAProxy refuses to start with an empty crt directory, which is the state on a
@@ -141,10 +144,13 @@ fi
 rm -f "$TMP_CFG"
 
 systemctl enable haproxy >/dev/null
-if systemctl is-active --quiet haproxy; then
-  systemctl reload haproxy
-else
+if ! systemctl is-active --quiet haproxy; then
   systemctl start haproxy
+elif [[ "${UNIT_CMDLINE_CHANGED:-0}" == "1" ]]; then
+  warn "restarting haproxy so it picks up the new command line — in-flight connections drop once"
+  systemctl restart haproxy
+else
+  systemctl reload haproxy
 fi
 sleep 1
 systemctl is-active --quiet haproxy || die "haproxy failed to start"
