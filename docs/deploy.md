@@ -468,9 +468,12 @@ sudo systemctl restart mail-watcher mattermost-watcher
 journalctl -u mail-watcher -f
 ```
 
-For the Mattermost token: **Profile → Security → Personal Access Tokens →
-Create**. If that option is absent, PATs are disabled for your account and an
-admin has to enable them. No admin rights are needed beyond that.
+For the Mattermost credential: **Profile → Security → Personal Access Tokens →
+Create** and put it in `MATTERMOST_TOKEN`. If that option is absent, PATs are
+disabled on the server; either ask an admin to enable them, or set
+`MATTERMOST_USERNAME` and `MATTERMOST_PASSWORD` instead — the watcher logs in
+with them and uses the resulting session token the same way. No admin rights are
+needed either way.
 
 **Check:**
 

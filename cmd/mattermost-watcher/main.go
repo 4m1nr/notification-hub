@@ -33,7 +33,13 @@ const maxPreview = 300
 type watcher struct {
 	serverURL string
 	wsURL     string
-	token     string
+	// Either a Personal Access Token, or a username/password pair for servers
+	// where PATs are disabled. A login yields a session token that the
+	// WebSocket accepts just like a PAT; since every reconnect goes through
+	// session() again, an expired session simply re-logs in.
+	token    string
+	username string
+	password string
 
 	// notifyMentions publishes any post that mentions me, in any channel.
 	notifyMentions bool
@@ -61,7 +67,9 @@ func main() {
 	cfg := config.New()
 	var (
 		serverURL = cfg.Required("MATTERMOST_URL") // https://mattermost.example.com
-		token     = cfg.Required("MATTERMOST_TOKEN")
+		token     = cfg.Optional("MATTERMOST_TOKEN", "")
+		username  = cfg.Optional("MATTERMOST_USERNAME", "")
+		password  = cfg.Optional("MATTERMOST_PASSWORD", "")
 		mentions  = cfg.Bool("MATTERMOST_NOTIFY_MENTIONS", true)
 		dms       = cfg.Bool("MATTERMOST_NOTIFY_DMS", true)
 		chans     = cfg.List("MATTERMOST_CHANNELS")
@@ -75,10 +83,17 @@ func main() {
 		log.Error("invalid configuration", "error", err)
 		os.Exit(1)
 	}
+	if token == "" && (username == "" || password == "") {
+		log.Error("invalid configuration",
+			"error", "set MATTERMOST_TOKEN, or MATTERMOST_USERNAME and MATTERMOST_PASSWORD")
+		os.Exit(1)
+	}
 
 	w := &watcher{
 		serverURL:      strings.TrimRight(serverURL, "/"),
 		token:          token,
+		username:       username,
+		password:       password,
 		notifyMentions: mentions,
 		notifyDMs:      dms,
 		channels:       toSet(chans),
@@ -140,19 +155,32 @@ func (w *watcher) run(ctx context.Context) {
 
 func (w *watcher) session(ctx context.Context) error {
 	// Resolve our own identity each time: it tells us which mentions are ours,
-	// and doubles as a check that the PAT is still valid before we open a socket.
+	// and doubles as a check that the credentials still work before we open a
+	// socket.
 	api := model.NewAPIv4Client(w.serverURL)
-	api.SetToken(w.token)
+	authCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
 
-	meCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	me, _, err := api.GetMe(meCtx, "")
-	cancel()
-	if err != nil {
-		return fmt.Errorf("authenticating with personal access token: %w", err)
+	var (
+		me  *model.User
+		err error
+	)
+	if w.token != "" {
+		api.SetToken(w.token)
+		me, _, err = api.GetMe(authCtx, "")
+		if err != nil {
+			return fmt.Errorf("authenticating with personal access token: %w", err)
+		}
+	} else {
+		me, _, err = api.Login(authCtx, w.username, w.password)
+		if err != nil {
+			return fmt.Errorf("logging in as %s: %w", w.username, err)
+		}
 	}
 	w.me = me
 
-	ws, aerr := model.NewWebSocketClient4(w.wsURL, w.token)
+	// api.AuthToken is the PAT we set, or the session token the login returned.
+	ws, aerr := model.NewWebSocketClient4(w.wsURL, api.AuthToken)
 	if aerr != nil {
 		return fmt.Errorf("websocket connect: %w", aerr)
 	}
