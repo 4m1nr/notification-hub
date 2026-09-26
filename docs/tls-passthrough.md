@@ -23,7 +23,8 @@ Two files are **generated** from that table and must not be edited directly:
 | File | Contents |
 |---|---|
 | `/etc/haproxy/sni-passthrough.map` | SNI hostname → backend name |
-| `/etc/haproxy/conf.d/10-passthrough.cfg` | the backend definitions |
+| `/etc/haproxy/conf.d/10-passthrough.cfg` | the backend definitions (and the decrypting frontend, if any domain uses `terminate`) |
+| `/etc/haproxy/cloudflare-only.passthrough.lst` | SNIs only Cloudflare may connect to |
 
 `haproxy.cfg` itself contains only a generic map lookup, so **adding a domain
 never means editing a tracked file** — and a `git pull` can never clobber your
@@ -58,10 +59,13 @@ sudo /opt/notification-hub/bin/passthrough.sh sync
 The format is one line per domain:
 
 ```
-# domain                     target
+# domain                     target            options
 app.example.com              127.0.0.1:8443
-other.example.com            127.0.0.1:9000
+other.example.com            127.0.0.1:9000    proxy-protocol cloudflare-only
 ```
+
+Options, any number, space-separated: `proxy-protocol` / `proxy-protocol-v1`
+(below), `cloudflare-only` and `terminate` (both under *Behind Cloudflare*).
 
 `sync` is idempotent, and refuses to reload if the resulting configuration does
 not validate — so a typo leaves the running proxy untouched rather than taking
@@ -83,7 +87,12 @@ map named in its config is missing. The installer creates them.
 Passthrough domains need **no certificate here**. Their handshake is never
 decrypted, so the backend service presents its own. Do not add them to
 `/etc/notification-hub/domains.map`; that table is only for domains this proxy
-terminates.
+terminates — which includes passthrough domains with the `terminate` option.
+
+If the backend's own certificate comes from certbot on this host, issue it with
+`issue-cert.sh <domain>`, never `certbot certonly --standalone`: HAProxy owns
+`:80` and forwards challenges to `ACME_HTTP_PORT`, and a bare certbot call
+that tries to bind `:80` fails with *Could not bind TCP port 80*.
 
 ## The backend sees HAProxy's IP, not the client's
 
@@ -167,6 +176,57 @@ If connections start failing outright after enabling it, the backend is not
 actually accepting PROXY protocol — it is reading the header as if it were the
 first bytes of a TLS handshake, and closing. Re-check that the setting is on the
 right transport block for that inbound.
+
+## Behind Cloudflare: the `terminate` option
+
+With the record proxied (orange cloud), the connection HAProxy receives is
+Cloudflare's, not the client's. The client's address is in the
+`CF-Connecting-IP` request header — inside the TLS stream, which passthrough by
+design never decrypts. So `proxy-protocol` alone sends the backend a
+Cloudflare edge address, and there is no way around that without reading the
+request.
+
+`terminate` reads it. That domain's TLS is decrypted by HAProxy, the source is
+rewritten from `CF-Connecting-IP` exactly as for the hub's own domains (trusted
+only when the peer is in Cloudflare's ranges, deleted otherwise), and the
+request is re-encrypted to the backend with the original name as SNI. With
+`proxy-protocol` as well, the PROXY header now carries the **real client**:
+
+```bash
+sudo /opt/notification-hub/bin/passthrough.sh add cdn.example.com 127.0.0.1:443 \
+  terminate proxy-protocol cloudflare-only
+```
+
+```
+client ─▶ Cloudflare ─▶ :443 tls_in ─▶ pt_https_in (decrypt, set-src from CF-Connecting-IP)
+                                          └─▶ backend over TLS, PROXY v2 = real client
+```
+
+What it needs and changes:
+
+- **A certificate here.** Add the domain to `domains.map` (`combined` or
+  `both`, service `haproxy`) and run `issue-cert.sh <domain>`. `sync` warns if
+  no certificate covers it; until then clients get another domain's.
+- **HTTP only** — HTTP/1.1, h2, WebSocket and gRPC. Cloudflare only proxies
+  HTTP anyway, so any orange-clouded record qualifies; a raw TLS protocol on a
+  grey-clouded record must stay plain passthrough.
+- **The backend is unchanged.** It still receives TLS (HAProxy does not check
+  its certificate, since it is this host's own service), and with
+  `proxy-protocol` it must accept PROXY protocol as described above.
+  WebSockets are kept on HTTP/1.1 towards it; other traffic may use h2.
+- It also gets `X-Forwarded-For` and `X-Forwarded-Proto`, for backends that
+  prefer headers to PROXY protocol.
+- Direct (non-Cloudflare) clients still work unless `cloudflare-only` is set;
+  their PROXY header carries their own address.
+
+### `cloudflare-only`
+
+Drops, silently, any connection for this SNI whose TCP peer is not in
+`/etc/haproxy/cloudflare-ips.lst`, so the origin cannot be used to bypass
+Cloudflare. Works with or without `terminate`. With `terminate`, the `Host`
+header is checked too, after decryption. For the hub's own domains the
+equivalent is `CLOUDFLARE_ONLY_DOMAINS` in `hub.env`; see *Cloudflare-only
+domains* in [security.md](security.md).
 
 ## Things worth knowing
 

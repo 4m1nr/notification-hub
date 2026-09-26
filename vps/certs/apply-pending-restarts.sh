@@ -27,7 +27,7 @@ apply() {
       # process, so in-flight connections — including the phone's long-lived
       # ntfy stream — survive.
       log "reloading haproxy"
-      haproxy -c -f /etc/haproxy/haproxy.cfg >/dev/null || {
+      haproxy -c -f /etc/haproxy/haproxy.cfg -f /etc/haproxy/conf.d >/dev/null || {
         log "haproxy config is invalid; refusing to reload"
         return 1
       }

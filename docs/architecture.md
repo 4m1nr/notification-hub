@@ -138,7 +138,10 @@ same lineages is worse than either alone.
 Renewals never stop HAProxy. certbot's standalone authenticator binds
 `ACME_HTTP_PORT` and HAProxy forwards `/.well-known/acme-challenge/` to it, so
 :80 stays owned by the proxy throughout — important when other services depend
-on it staying up.
+on it staying up. The port is set in `/etc/letsencrypt/cli.ini` and pinned in
+every lineage's renewal config, so no certbot invocation falls back to :80.
+New domains are issued with `issue-cert.sh`, which binds :80 directly only when
+nothing holds it (the first install, before HAProxy exists).
 
 Adding a domain is one line in `/etc/notification-hub/domains.map`.
 

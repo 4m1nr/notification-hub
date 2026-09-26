@@ -94,6 +94,18 @@ frontend tls_in
     # passthrough session (and ntfy's long-lived subscription) mid-stream.
     timeout client 1h
     tcp-request inspect-delay 5s
+
+    # --- Cloudflare-only domains ---
+    # A domain listed here is reachable only through Cloudflare's proxy: a
+    # direct connection asking for it is silent-dropped before any TLS happens,
+    # so the origin cannot be used to bypass Cloudflare's WAF and rate limits.
+    # The hub's list comes from CLOUDFLARE_ONLY_DOMAINS in hub.env; the
+    # passthrough list from the cloudflare-only option in passthrough.conf.
+    # This rule must come before the accept below: accept ends evaluation.
+    acl from_cloudflare src -f /etc/haproxy/cloudflare-ips.lst
+    acl cf_only_sni     req.ssl_sni,lower -m str -f /etc/haproxy/cloudflare-only.hub.lst -f /etc/haproxy/cloudflare-only.passthrough.lst
+    tcp-request content silent-drop if !from_cloudflare cf_only_sni
+
     tcp-request content accept if { req.ssl_hello_type 1 }
 
     # --- TLS passthrough ---
@@ -128,10 +140,11 @@ backend be_reject
 #-----------------------------------------------------------------------------
 frontend http_in
     bind *:80
-    # Renewals must not require stopping HAProxy — doing so would drop the
-    # passthrough tunnels above as well. certbot runs standalone on
-    # ACME_HTTP_PORT instead, and this forwards the challenge to it, so :80 stays
-    # owned by HAProxy the whole time.
+    # Issuing or renewing must not require stopping HAProxy — doing so would
+    # drop the passthrough tunnels above as well. certbot runs standalone on
+    # ACME_HTTP_PORT instead (pinned in /etc/letsencrypt/cli.ini and in each
+    # lineage's renewal config by 70-certs.sh), and this forwards the challenge
+    # to it, so :80 stays owned by HAProxy the whole time.
     acl acme_challenge path_beg /.well-known/acme-challenge/
     http-request redirect scheme https code 301 unless acme_challenge
     use_backend be_acme if acme_challenge
@@ -156,6 +169,15 @@ frontend https_in
     # http-keep-alive 15s', both inherited from defaults.
     timeout client 12h
 
+    # ---- Cloudflare-only hosts ----
+    # tls_in already drops a direct connection whose SNI is Cloudflare-only.
+    # This catches the other half: a direct client presenting an allowed SNI
+    # and then asking for a Cloudflare-only Host inside it. It must run before
+    # set-src below, which replaces src with the client behind Cloudflare.
+    acl from_cloudflare src -f /etc/haproxy/cloudflare-ips.lst
+    acl cf_only_host    hdr(host),field(1,:),lower -m str -f /etc/haproxy/cloudflare-only.hub.lst
+    http-request silent-drop if cf_only_host !from_cloudflare
+
     # ---- Cloudflare ----
     # A domain proxied through Cloudflare arrives from a Cloudflare edge, with
     # the real client in CF-Connecting-IP. The header is trusted only when the
@@ -164,8 +186,7 @@ frontend https_in
     # source for everything that follows — the stick tables, the abuse flags,
     # the log line fail2ban reads, and X-Forwarded-For — so they all key on
     # the real client rather than on a handful of shared edge addresses.
-    acl from_cloudflare src -f /etc/haproxy/cloudflare-ips.lst
-    acl has_cf_ip       req.hdr(CF-Connecting-IP) -m found
+    acl has_cf_ip      req.hdr(CF-Connecting-IP) -m found
     http-request set-src req.hdr(CF-Connecting-IP) if from_cloudflare has_cf_ip
     http-request del-header CF-Connecting-IP unless from_cloudflare
 
@@ -221,14 +242,18 @@ frontend https_in
     # ---- Admin UIs sit behind basic auth ----
     # healthchecks' ping and API endpoints stay open: the office PC checks in on
     # /ping/<uuid>, where the UUID is itself the credential.
+    # The ACME challenge is exempt too: with Cloudflare's "Always Use HTTPS" on,
+    # Let's Encrypt's :80 request is redirected and arrives here instead.
     acl hc_open       path_beg /ping/ /api/
+    acl acme_challenge path_beg /.well-known/acme-challenge/
     acl admin_authed  http_auth(admin_users)
-    http-request auth realm "notification-hub" if host_watch !admin_authed
-    http-request auth realm "notification-hub" if host_checks !hc_open !admin_authed
+    http-request auth realm "notification-hub" if host_watch !acme_challenge !admin_authed
+    http-request auth realm "notification-hub" if host_checks !hc_open !acme_challenge !admin_authed
 
     # An unknown Host header is almost always a scanner probing the IP directly.
     http-request deny deny_status 421 unless host_ntfy || host_rss || host_watch || host_checks
 
+    use_backend be_acme   if acme_challenge
     use_backend be_ntfy   if host_ntfy
     use_backend be_rss    if host_rss
     use_backend be_watch  if host_watch

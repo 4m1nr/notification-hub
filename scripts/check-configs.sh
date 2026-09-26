@@ -51,7 +51,7 @@ fail=0
 echo "==> haproxy"
 mkdir -p "$WORK/certs"
 openssl req -x509 -newkey rsa:2048 -nodes -keyout "$WORK/k.pem" -out "$WORK/c.pem" \
-  -days 1 -subj "/CN=test" 2>/dev/null
+  -days 1 -subj "/CN=test" -addext "subjectAltName=DNS:cdn.example.com" 2>/dev/null
 cat "$WORK/c.pem" "$WORK/k.pem" > "$WORK/certs/test.pem"
 render vps/haproxy/haproxy.cfg.tmpl > "$WORK/haproxy.cfg"
 
@@ -60,11 +60,20 @@ render vps/haproxy/haproxy.cfg.tmpl > "$WORK/haproxy.cfg"
 # on its own can still be broken once they are loaded alongside it.
 mkdir -p "$WORK/conf.d"
 { printf 'sample.example.com  127.0.0.1:9441\n'
-  printf 'proxied.example.com 127.0.0.1:9442  proxy-protocol\n'; } > "$WORK/passthrough.conf"
+  printf 'proxied.example.com 127.0.0.1:9442  proxy-protocol\n'
+  printf 'edge.example.com    127.0.0.1:9443  cloudflare-only\n'
+  printf 'cdn.example.com     127.0.0.1:9444  terminate proxy-protocol cloudflare-only\n'; } > "$WORK/passthrough.conf"
+# The generated conf.d names host paths; they are rewritten below to the
+# container's mount point, like the main config's.
 PASSTHROUGH_TABLE="$WORK/passthrough.conf" PASSTHROUGH_MAP="$WORK/sni-passthrough.map" \
 HAPROXY_CONF_D="$WORK/conf.d" HAPROXY_MAIN_CFG=/nonexistent \
+CLOUDFLARE_ONLY_PASSTHROUGH_LIST="$WORK/cloudflare-only.passthrough.lst" \
+HAPROXY_CERT_DIR="$WORK/certs" \
   ./vps/haproxy/passthrough.sh sync >/dev/null
-chmod -R a+rX "$WORK/conf.d" "$WORK/sni-passthrough.map"
+sed -i "s|$WORK/|/cfg/|g; s|/etc/haproxy/cloudflare-ips.lst|/cfg/cloudflare-ips.lst|g" "$WORK/conf.d/10-passthrough.cfg"
+printf 'rss.example.com\n' > "$WORK/cloudflare-only.hub.lst"
+sed -i "s|/etc/haproxy/cloudflare-only\.|/cfg/cloudflare-only.|g" "$WORK/haproxy.cfg"
+chmod -R a+rX "$WORK/conf.d" "$WORK/sni-passthrough.map" "$WORK"/cloudflare-only.*
 # Rewrite absolute paths to the container's mount point. Mounting at a fixed
 # path rather than mirroring the host path matters: some docker setups give the
 # daemon a private /tmp, and a same-path mount under /tmp is then invisible
@@ -97,6 +106,19 @@ if grep -q 'server target 127.0.0.1:9442 send-proxy-v2' "$WORK/conf.d/10-passthr
   echo "    proxy-protocol applied only where requested"
 else
   echo "    proxy-protocol option did not render correctly"; fail=1
+fi
+
+# A terminate domain goes to the internal decrypting frontend, keeps its PROXY
+# header on the re-encrypted server line, and a cloudflare-only one reaches
+# the SNI drop list.
+if grep -qx 'cdn.example.com be_pt_terminate' "$WORK/sni-passthrough.map" \
+   && grep -q 'server target 127.0.0.1:9444 ssl .* send-proxy-v2$' "$WORK/conf.d/10-passthrough.cfg" \
+   && grep -qx 'edge.example.com' "$WORK/cloudflare-only.passthrough.lst" \
+   && grep -qx 'cdn.example.com' "$WORK/cloudflare-only.passthrough.lst" \
+   && ! grep -qx 'sample.example.com' "$WORK/cloudflare-only.passthrough.lst"; then
+  echo "    terminate and cloudflare-only options rendered correctly"
+else
+  echo "    terminate / cloudflare-only options did not render correctly"; fail=1
 fi
 
 echo "==> rsyslog"

@@ -8,7 +8,7 @@
 #
 #   <sni-hostname>    <backend-target>    [options]
 #
-# Options (optional third column):
+# Options (optional, any number, space-separated after the target):
 #
 #   proxy-protocol      Send PROXY protocol v2 to the backend, so it can see the
 #                       real client IP instead of HAProxy's. In TCP mode HAProxy
@@ -17,6 +17,18 @@
 #                       The backend MUST be configured to accept it — and once
 #                       it is, connecting to it directly stops working.
 #   proxy-protocol-v1   The older text format, for backends that only speak v1.
+#   cloudflare-only     Only Cloudflare's edge ranges may connect to this SNI;
+#                       anyone else is silently dropped. For a proxied (orange
+#                       cloud) record whose origin must not be reachable
+#                       directly.
+#   terminate           Decrypt here and re-encrypt to the backend, instead of
+#                       passing the handshake through. Behind Cloudflare, plain
+#                       passthrough only ever sees the edge's address — the real
+#                       client is in CF-Connecting-IP, inside the TLS stream.
+#                       With terminate + proxy-protocol the backend receives the
+#                       real client in the PROXY header, as the hub's own
+#                       domains do. HTTP(S)/WebSocket/gRPC only, and HAProxy
+#                       needs a certificate for the domain (domains.map).
 #
 # Connections whose TLS SNI matches the hostname are handed to the target with
 # the handshake untouched, so that service keeps terminating its own TLS. The
@@ -33,3 +45,4 @@
 #servenet.example.com        127.0.0.1:441
 #mooz.example.com            127.0.0.1:440
 #node.example.com            127.0.0.1:442           proxy-protocol
+#cdn.example.com             127.0.0.1:443           terminate proxy-protocol cloudflare-only

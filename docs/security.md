@@ -172,8 +172,30 @@ limiting but never opens a spoofing hole.
 
 Cloudflare's SSL mode must be **Full (strict)** — the origin has a real
 certificate, and "Flexible" would talk plain HTTP to a port that only redirects.
-Leave "Always Use HTTPS" off, or grey-cloud the record, while issuing a
-certificate: the HTTP-01 challenge must reach `:80` as HTTP.
+"Always Use HTTPS" may stay on: Let's Encrypt's challenge is then redirected to
+`:443`, and HAProxy routes `/.well-known/acme-challenge/` to certbot there too
+(for hub and `terminate` domains; a plain passthrough domain's `:443` belongs to
+its backend).
+
+### Cloudflare-only domains
+
+A proxied domain's origin is still reachable directly by anyone who learns its
+IP, which walks around Cloudflare's WAF and rate limits. Listing a domain as
+Cloudflare-only makes HAProxy **silent-drop any connection for it whose TCP
+peer is not in Cloudflare's ranges**:
+
+- hub domains: `CLOUDFLARE_ONLY_DOMAINS="rss.example.com watch.example.com"` in
+  `hub.env`, then re-run `80-haproxy.sh`;
+- passthrough domains: the `cloudflare-only` option in
+  `/etc/haproxy/passthrough.conf`, then `passthrough.sh sync`.
+
+It is checked twice. On `:443` the SNI is matched before any TLS happens; after
+decryption the `Host` header is matched as well, so a direct client cannot
+present an allowed SNI and ask for a Cloudflare-only host inside it. `:80` is
+unaffected — it only redirects, and must stay open for Let's Encrypt.
+
+This fails closed: if `cloudflare-ips.lst` is empty (the first fetch failed),
+these domains are unreachable until `cloudflare-ips.timer` succeeds.
 
 What changes with Cloudflare in front:
 
@@ -186,8 +208,12 @@ What changes with Cloudflare in front:
   keepalive is well inside Cloudflare's idle limit, and WebSockets are
   supported, so it works — but it is one more thing between you and a
   notification.
-- **TLS passthrough domains cannot be proxied.** Cloudflare terminates TLS
-  itself, which is exactly what passthrough exists to avoid.
+- **Passthrough domains behind Cloudflare see the edge, not the client.**
+  Cloudflare opens its own TLS connection to the origin, so the backend still
+  terminates TLS — but the real client is in `CF-Connecting-IP`, inside that
+  encrypted stream, where HAProxy cannot read it. PROXY protocol then carries a
+  Cloudflare address. The `terminate` option fixes this; see
+  [tls-passthrough.md](tls-passthrough.md#behind-cloudflare-the-terminate-option).
 
 ## Coexisting with what is already on the box
 
@@ -202,7 +228,7 @@ things, so every step that touches shared state is additive:
 | **Ports** | `05-preflight.sh` refuses to install if anything already holds a port the stack wants, naming the process. Every internal port is configurable in `hub.env`. |
 | **HAProxy's log** | If the haproxy package already ships an rsyslog rule or logrotate entry for `/var/log/haproxy.log`, those are used as-is rather than a competing one being installed. |
 | **:443** | Shared by SNI. Passthrough domains reach their own backends untouched; only this project's four domains are TLS-terminated. The routing table is untracked and lives on the host — see [tls-passthrough.md](tls-passthrough.md). |
-| **:80** | Stays owned by HAProxy permanently — certbot renews on `ACME_HTTP_PORT` behind it, so renewals never stop the proxy and never interrupt other services. |
+| **:80** | Stays owned by HAProxy permanently — certbot issues and renews on `ACME_HTTP_PORT` behind it (`/etc/letsencrypt/cli.ini`, each lineage's renewal config, `issue-cert.sh`), so certificates never stop the proxy and never interrupt other services. |
 
 ## Credential handling
 

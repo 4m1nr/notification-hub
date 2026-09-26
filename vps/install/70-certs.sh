@@ -24,7 +24,7 @@ if [[ ! -f /etc/notification-hub/domains.map ]]; then
   warn "edit /etc/notification-hub/domains.map and uncomment your domains before continuing"
 fi
 
-for script in distribute-certs.sh check-cert-renewal.sh apply-pending-restarts.sh; do
+for script in distribute-certs.sh check-cert-renewal.sh apply-pending-restarts.sh issue-cert.sh; do
   install_file "$REPO_ROOT/vps/certs/$script" "$HUB_PREFIX/bin/$script" 0750 root:root || true
 done
 
@@ -36,6 +36,24 @@ cat > /etc/letsencrypt/renewal-hooks/deploy/10-notification-hub.sh <<'HOOK'
 exec /opt/notification-hub/bin/distribute-certs.sh
 HOOK
 chmod 0750 /etc/letsencrypt/renewal-hooks/deploy/10-notification-hub.sh
+
+# Keep certbot off :80 by default. HAProxy owns :80 and forwards the challenge
+# to ACME_HTTP_PORT, so any certbot run on this box — a manual `certbot renew`,
+# a `certbot certonly --standalone` for a new domain — must listen there, or it
+# fails with "Could not bind TCP port 80". Only this key is managed; anything
+# else in cli.ini is left alone.
+ACME_HTTP_PORT="${ACME_HTTP_PORT:-8402}"
+CLI_INI=/etc/letsencrypt/cli.ini
+touch "$CLI_INI"
+if grep -qE '^http-01-port *=' "$CLI_INI"; then
+  sed -i -E "s/^http-01-port *=.*/http-01-port = ${ACME_HTTP_PORT}/" "$CLI_INI"
+else
+  printf '\n# notification-hub: HAProxy owns :80 and forwards ACME challenges here\nhttp-01-port = %s\n' \
+    "$ACME_HTTP_PORT" >> "$CLI_INI"
+fi
+
+# Lineages issued before this existed may have recorded :80 for renewal.
+"$HUB_PREFIX/bin/issue-cert.sh" --pin-renewal-port
 
 install_unit "$REPO_ROOT/vps/systemd/cert-renew-check.service"
 install_unit "$REPO_ROOT/vps/systemd/cert-renew-check.timer"
@@ -54,5 +72,5 @@ enable_now cert-renew-check.timer
 enable_now cert-restart.timer
 
 log "certificate automation installed"
-log "issue certificates with: certbot certonly --standalone -d <domain> --email $ACME_EMAIL --agree-tos"
-log "then run: $HUB_PREFIX/bin/distribute-certs.sh"
+log "issue certificates with: $HUB_PREFIX/bin/issue-cert.sh <domain>"
+log "  (it binds :80 itself before HAProxy exists, and $ACME_HTTP_PORT behind it after)"

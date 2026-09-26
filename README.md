@@ -97,13 +97,12 @@ sudo "${EDITOR:-vi}" /etc/notification-hub/hub.env   # domains, ACME email
 sudo ./bootstrap.sh 05-preflight.sh 10-packages.sh 15-firewall.sh 20-postgres.sh \
                     30-ntfy.sh 40-miniflux.sh 50-go-services.sh
 
-# Issue certificates, then let the distribution script place them.
-# This first issuance needs :80 free, so run it before HAProxy starts. Renewals
-# afterwards go through HAProxy and never stop it.
+# Issue certificates; issue-cert.sh also distributes them. It binds :80 itself
+# while HAProxy does not exist yet, and goes through HAProxy afterwards — never
+# run `certbot certonly --standalone` directly.
 sudo ./bootstrap.sh 70-certs.sh
 sudo "${EDITOR:-vi}" /etc/notification-hub/domains.map   # uncomment your domains
-sudo certbot certonly --standalone -d ntfy.example.com --email you@example.com --agree-tos
-sudo /opt/notification-hub/bin/distribute-certs.sh
+sudo /opt/notification-hub/bin/issue-cert.sh ntfy.example.com   # once per domain
 
 # The rest.
 sudo ./bootstrap.sh 80-haproxy.sh 90-docker-apps.sh 60-syslog.sh 85-fail2ban.sh 95-backup.sh

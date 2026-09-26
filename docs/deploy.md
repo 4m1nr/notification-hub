@@ -195,19 +195,27 @@ watch.example.com   /etc/certs/proxy/watch    root:haproxy   both    haproxy
 checks.example.com  /etc/certs/proxy/checks   root:haproxy   both    haproxy
 ```
 
-> Do **not** add TLS-passthrough domains here, and do not add the syslog
+> Do **not** add plain TLS-passthrough domains here, and do not add the syslog
 > collector. Passthrough domains present their own certificates, and the
-> collector uses a self-signed one on a loopback socket.
+> collector uses a self-signed one on a loopback socket. The exception is a
+> passthrough domain with the `terminate` option — HAProxy decrypts those, so
+> they need a line here like a hub domain.
 
-Now issue them. This first issuance needs port 80, and HAProxy is not running
-yet — which is exactly why this step comes before it:
+Now issue them, one lineage per line in the table. `issue-cert.sh` looks at
+who holds `:80`: now, before HAProxy exists, certbot binds it directly; later,
+it binds `ACME_HTTP_PORT` and HAProxy forwards the challenge. Either way it
+distributes the result:
 
 ```bash
-sudo certbot certonly --standalone --agree-tos --email you@example.com \
-  -d ntfy.example.com -d rss.example.com -d watch.example.com -d checks.example.com
-
-sudo /opt/notification-hub/bin/distribute-certs.sh
+for d in ntfy.example.com rss.example.com watch.example.com checks.example.com; do
+  sudo /opt/notification-hub/bin/issue-cert.sh "$d"
+done
 ```
+
+> **Do not call `certbot certonly --standalone` directly.** `70-certs.sh` sets
+> `http-01-port` in `/etc/letsencrypt/cli.ini` so certbot stays off HAProxy's
+> `:80`, which means a bare call before HAProxy exists listens on a port
+> nothing forwards to. `issue-cert.sh` picks the right port for you.
 
 **Check:**
 
@@ -219,9 +227,11 @@ ls /var/lib/notification-hub/pending-restart/          # a queued 'haproxy' flag
 That flag is correct. The deploy hook never restarts anything — a separate daily
 timer applies queued changes, so a 3am renewal cannot cause a 3am restart.
 
-> **Renewals do not stop HAProxy.** certbot binds `ACME_HTTP_PORT` (8402) and
-> HAProxy forwards the challenge to it, so `:80` stays owned by the proxy and
-> other services behind it are never interrupted.
+> **Renewals and later issuances do not stop HAProxy.** certbot binds
+> `ACME_HTTP_PORT` (8402) and HAProxy forwards the challenge to it, so `:80`
+> stays owned by the proxy and other services behind it are never interrupted.
+> Each lineage's renewal config is pinned to that port too, so even a manual
+> `certbot renew` never collides with HAProxy.
 
 ---
 
@@ -288,6 +298,11 @@ it the backend logs `127.0.0.1` for every request:
 ```bash
 sudo /opt/notification-hub/bin/passthrough.sh add node.example.com 127.0.0.1:442 proxy-protocol
 ```
+
+If the domain is proxied through Cloudflare, that address would be Cloudflare's
+edge; add `terminate` as well so HAProxy can read `CF-Connecting-IP` and send
+the real client instead, and `cloudflare-only` to refuse anyone who bypasses
+Cloudflare. See *Behind Cloudflare* in [tls-passthrough.md](tls-passthrough.md).
 
 The backend must be configured to accept it — and once it is, connecting to that
 port directly stops working. Full detail, including the Xray-core settings, in
