@@ -222,6 +222,25 @@ than the old one), run `70-certs.sh`, then re-issue each lineage with the same
 names and `--cert-name` it had. `issue-cert.sh --list` on the old box, or
 `domains.map`, tells you what they were.
 
+## A lineage marked BROKEN
+
+`issue-cert.sh --list` shows `(BROKEN: live links lead nowhere …)` when a
+lineage's files in `/etc/letsencrypt/live/<name>/` are links into an archive
+that no longer exists. That typically happens when they pointed into *another*
+lineage's archive (after a hand repair or an old rename) and that lineage was
+deleted. While it is broken, nothing can renew it, `distribute-certs.sh` stops
+refreshing its copies (and says so), and certbot would issue a replacement
+under a different name (`<name>-0001`) that nothing here reads.
+
+`issue-cert.sh` refuses to issue over a broken lineage and prints the commands
+to clear it: back up `/etc/letsencrypt`, remove the lineage's `live`,
+`archive` and `renewal` entries, then issue again under the same name. If
+certbot still saves the certificate under another name, `issue-cert.sh` stops
+and says so rather than reporting success.
+
+To prevent it, `--remove` refuses to delete a lineage whose archive another
+lineage's links still lead into.
+
 ## Rate limits worth knowing
 
 Let's Encrypt allows 5 certificates per week for the *exact same set of names*,

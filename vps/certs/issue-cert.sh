@@ -33,6 +33,7 @@ HUB_ENV="${HUB_ENV:-/etc/notification-hub/hub.env}"
 DOMAINS_MAP="${DOMAINS_MAP:-/etc/notification-hub/domains.map}"
 LE_RENEWAL="${LE_RENEWAL:-/etc/letsencrypt/renewal}"
 LE_LIVE="${LE_LIVE:-/etc/letsencrypt/live}"
+LE_ARCHIVE="${LE_ARCHIVE:-/etc/letsencrypt/archive}"
 HUB_PREFIX="${HUB_PREFIX:-/opt/notification-hub}"
 HUB_STATE="${HUB_STATE:-/var/lib/notification-hub}"
 COMBINED_DIR="${COMBINED_DIR:-/etc/certs/proxy/combined}"
@@ -73,6 +74,33 @@ pin_renewal_port() {
   log "$(basename "$conf" .conf): renewals now use port $ACME_HTTP_PORT"
 }
 
+# lineage_state prints "ok", "missing" (no live directory) or "broken" (a
+# live directory whose links lead nowhere, typically into an archive that
+# was deleted along with another lineage).
+lineage_state() {
+  local live="$LE_LIVE/$1"
+  if [[ -f "$live/fullchain.pem" && -f "$live/privkey.pem" ]]; then
+    echo ok
+  elif [[ -e "$live" || -L "$live/fullchain.pem" ]]; then
+    echo broken
+  else
+    echo missing
+  fi
+}
+
+# broken_lineage_help prints how to clear a broken lineage so it can be issued
+# again under the same name. certbot cannot delete it itself: it cannot load it.
+broken_lineage_help() {
+  local name="$1"
+  cat >&2 <<EOF
+  Its files in $LE_LIVE/$name lead nowhere. certbot would issue the new
+  certificate under another name ($name-0001), which nothing here reads.
+  Clear it, then run this again:
+    sudo tar czf /root/letsencrypt-backup-\$(date +%F).tgz /etc/letsencrypt
+    sudo rm -rf $LE_LIVE/$name $LE_ARCHIVE/$name $LE_RENEWAL/$name.conf
+EOF
+}
+
 # in_domains_map succeeds when the lineage has an active line in domains.map.
 in_domains_map() {
   [[ -f "$DOMAINS_MAP" ]] && awk '!/^[[:space:]]*#/ {print $1}' "$DOMAINS_MAP" | grep -qxF "$1"
@@ -94,6 +122,8 @@ list_certs() {
         | tr ',' '\n' | sed -nE 's/^ *DNS://p' | paste -sd' ' -)"
       end="$(date -d "$(openssl x509 -in "$cert" -noout -enddate | cut -d= -f2)" +%s)"
       days=$(( (end - now) / 86400 ))
+    elif [[ "$(lineage_state "$name")" == broken ]]; then
+      names="(BROKEN: live links lead nowhere — see '$0 $name')"; days="-"
     else
       names="(certificate missing)"; days="-"
     fi
@@ -119,6 +149,14 @@ remove_cert() {
     others="$(find "$COMBINED_DIR" -maxdepth 1 -name '*.pem' ! -name "$name.pem" | wc -l)"
     (( others > 0 )) || die "$combined is the only certificate HAProxy has; issue its replacement first"
   fi
+
+  # Another lineage's live links may lead into this one's archive (left behind
+  # by hand repairs or an old rename); deleting it would break that lineage.
+  local dependents
+  dependents="$(find "$LE_LIVE" -mindepth 2 -maxdepth 2 -type l -lname "*/archive/$name/*" \
+    ! -path "$LE_LIVE/$name/*" -printf '%h\n' 2>/dev/null | sort -u | xargs -r -n1 basename)"
+  [[ -z "$dependents" ]] || die "lineage(s) $(echo $dependents) still use the files of '$name' (their links in
+  $LE_LIVE lead into $LE_ARCHIVE/$name), so deleting it would break them. Re-issue those first."
 
   certbot delete --cert-name "$name" --non-interactive
   if [[ -f "$combined" ]]; then
@@ -213,6 +251,12 @@ fi
 domain_args=()
 for d in "${domains[@]}"; do domain_args+=(-d "$d"); done
 
+if [[ -f "$LE_RENEWAL/$cert_name.conf" && "$(lineage_state "$cert_name")" != ok ]]; then
+  log "ERROR: lineage $cert_name exists but is broken."
+  broken_lineage_help "$cert_name"
+  exit 1
+fi
+
 # An existing lineage given a different set of names is reissued with exactly
 # the names listed here — that is how names are added or dropped later.
 if [[ -f "$LE_RENEWAL/$cert_name.conf" ]]; then
@@ -222,6 +266,19 @@ fi
 certbot certonly "${challenge_args[@]}" --cert-name "$cert_name" \
   --non-interactive --agree-tos --email "$ACME_EMAIL" --keep-until-expiring \
   "${domain_args[@]}"
+
+# certbot quietly picks another name when it cannot use the requested one;
+# everything downstream looks for this name, so stop rather than report done.
+if [[ "$(lineage_state "$cert_name")" != ok ]]; then
+  stray="$(ls -dt "$LE_LIVE/$cert_name"-[0-9]* 2>/dev/null | head -n1 || true)"
+  stray="${stray:+$(basename "$stray")}"
+  if [[ -n "$stray" ]]; then
+    die "certbot saved the certificate as $stray, not $cert_name, and nothing reads $stray.
+  Delete it (sudo certbot delete --cert-name $stray), clear $cert_name as
+  '$0 --list' describes, and issue again."
+  fi
+  die "certbot finished, but $LE_LIVE/$cert_name has no usable certificate; see /var/log/letsencrypt/letsencrypt.log"
+fi
 
 pin_renewal_port "$LE_RENEWAL/$cert_name.conf"
 
