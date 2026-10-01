@@ -5,7 +5,11 @@
 # read this file, and nothing else needs to know about the new domain.
 #
 # Columns (whitespace-separated):
-#   domain      the certbot lineage name (as under /etc/letsencrypt/live/<domain>)
+#   domain      the certbot lineage name (as under /etc/letsencrypt/live/<domain>),
+#               which is not always a hostname: a wildcard *.example.com is the
+#               lineage example.com, and a multi-name certificate is named after
+#               its first name. `issue-cert.sh --list` shows the names. One
+#               lineage may appear on several lines to copy it to several places.
 #   dest        directory that receives the certificate
 #   owner:group ownership applied to the copied files
 #   format      split    -> fullchain.pem (0644) + privkey.pem (0640) in dest
@@ -27,3 +31,7 @@
 #checks.example.com          /etc/certs/proxy/checks           root:haproxy     both      haproxy
 #a.tunnel.example.com        /etc/certs/tunnel/a               root:tunnel      split     tunnel
 #b.tunnel.example.com        /etc/certs/tunnel/b               root:tunnel      split     tunnel
+#
+# Wildcard / multi-name examples (see docs/certificates.md):
+#example.com                 /etc/certs/proxy/wildcard         root:haproxy     both      haproxy
+#example.com                 /etc/certs/tunnel/wildcard        root:tunnel      split     tunnel

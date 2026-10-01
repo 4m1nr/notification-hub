@@ -54,6 +54,10 @@ while read -r domain dest owner format service _rest; do
   [[ -z "${domain:-}" || "${domain:0:1}" == "#" ]] && continue
   [[ -n "${dest:-}" && -n "${owner:-}" && -n "${format:-}" && -n "${service:-}" ]] \
     || die "malformed line for domain '$domain' in $DOMAINS_MAP"
+  # The first column is the lineage name, which never contains '*': a wildcard
+  # certificate for *.example.com lives in the lineage example.com.
+  [[ "$domain" != *'*'* ]] \
+    || die "'$domain' in $DOMAINS_MAP: use the lineage name (issue-cert.sh --list), not the wildcard"
 
   if [[ -n "$only_lineage" && "$domain" != "$only_lineage" ]]; then
     continue

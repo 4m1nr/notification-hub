@@ -52,6 +52,28 @@ else
     "$ACME_HTTP_PORT" >> "$CLI_INI"
 fi
 
+# DNS-01 validation, which wildcard certificates require. The plugin is the
+# distro package; its credential file holds a DNS API token and is written by
+# hand (docs/certificates.md), never by this script.
+if [[ -n "${ACME_DNS_PLUGIN:-}" ]]; then
+  [[ "$ACME_DNS_PLUGIN" =~ ^[a-z0-9-]+$ ]] || die "ACME_DNS_PLUGIN='$ACME_DNS_PLUGIN' is not a plugin name"
+  pkg="python3-certbot-dns-$ACME_DNS_PLUGIN"
+  if apt-cache show "$pkg" >/dev/null 2>&1; then
+    apt_ensure "$pkg"
+  elif ! certbot plugins 2>/dev/null | grep -qE "^\* dns-${ACME_DNS_PLUGIN}\$"; then
+    warn "no package $pkg and certbot has no dns-$ACME_DNS_PLUGIN plugin — install it yourself"
+  fi
+  ensure_dir /etc/letsencrypt/dns 0700 root:root
+  creds="${ACME_DNS_CREDENTIALS:-/etc/letsencrypt/dns/${ACME_DNS_PLUGIN}.ini}"
+  if [[ "$ACME_DNS_PLUGIN" != route53 ]]; then
+    if [[ -f "$creds" ]]; then
+      chmod 0600 "$creds"; chown root:root "$creds"
+    else
+      warn "DNS credentials $creds do not exist yet; wildcard issuance fails until they do"
+    fi
+  fi
+fi
+
 # Lineages issued before this existed may have recorded :80 for renewal.
 "$HUB_PREFIX/bin/issue-cert.sh" --pin-renewal-port
 
@@ -72,5 +94,7 @@ enable_now cert-renew-check.timer
 enable_now cert-restart.timer
 
 log "certificate automation installed"
-log "issue certificates with: $HUB_PREFIX/bin/issue-cert.sh <domain>"
-log "  (it binds :80 itself before HAProxy exists, and $ACME_HTTP_PORT behind it after)"
+log "issue certificates with: $HUB_PREFIX/bin/issue-cert.sh <domain> [<domain>...]"
+log "  (it binds :80 itself before HAProxy exists, and $ACME_HTTP_PORT behind it after;"
+log "   wildcards such as '*.example.com' use the DNS plugin in ACME_DNS_PLUGIN)"
+log "list them with:       $HUB_PREFIX/bin/issue-cert.sh --list"
