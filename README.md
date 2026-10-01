@@ -103,6 +103,9 @@ sudo ./bootstrap.sh 05-preflight.sh 10-packages.sh 15-firewall.sh 20-postgres.sh
 sudo ./bootstrap.sh 70-certs.sh
 sudo "${EDITOR:-vi}" /etc/notification-hub/domains.map   # uncomment your domains
 sudo /opt/notification-hub/bin/issue-cert.sh ntfy.example.com   # once per domain
+# Multi-name and wildcard certificates work too — see docs/certificates.md:
+#   issue-cert.sh ntfy.example.com rss.example.com
+#   issue-cert.sh '*.example.com' example.com     (needs a DNS API token)
 
 # The rest.
 sudo ./bootstrap.sh 80-haproxy.sh 90-docker-apps.sh 60-syslog.sh 85-fail2ban.sh 95-backup.sh
@@ -132,6 +135,7 @@ sudo systemctl restart mail-watcher mattermost-watcher
 | [docs/changedetection-login.md](docs/changedetection-login.md) | Watching pages behind a login |
 | [docs/security.md](docs/security.md) | What's exposed, and every layer protecting it |
 | [docs/tls-passthrough.md](docs/tls-passthrough.md) | Sharing :443 with other services on the box |
+| [docs/certificates.md](docs/certificates.md) | Multi-name and wildcard certificates: setup, renewal, management |
 | [docs/backup-restore.md](docs/backup-restore.md) | Decrypting and restoring from Telegram |
 
 ## Development

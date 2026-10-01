@@ -87,14 +87,17 @@ has_option() {
   return 1
 }
 
-# has_certificate succeeds when some PEM in CERT_DIR covers the domain by name.
+# has_certificate succeeds when some PEM in CERT_DIR covers the domain by name,
+# directly or through a wildcard for its parent (one label only, as in TLS).
 # A terminated domain without one would be served another domain's certificate.
 has_certificate() {
-  local domain="$1" pem
+  local domain="${1,,}" pem
+  local wildcard="*.${domain#*.}"
   for pem in "$CERT_DIR"/*.pem; do
     [[ -f "$pem" ]] || continue
     openssl x509 -in "$pem" -noout -ext subjectAltName 2>/dev/null \
-      | tr ',' '\n' | sed 's/^ *//' | grep -qixF "DNS:$domain" && return 0
+      | tr ',' '\n' | sed 's/^ *//' \
+      | grep -qixF -e "DNS:$domain" -e "DNS:$wildcard" && return 0
   done
   return 1
 }

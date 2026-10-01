@@ -117,10 +117,13 @@ sudo cp -a restore/changedetection/. /var/lib/changedetection/
 ```bash
 sudo ./bootstrap.sh 30-ntfy.sh 40-miniflux.sh 50-go-services.sh 70-certs.sh
 
-# Keys were never backed up — get new ones.
-sudo certbot certonly --standalone -d ntfy.example.com --email you@example.com --agree-tos
-# ... repeat for each domain in domains.map ...
-sudo /opt/notification-hub/bin/distribute-certs.sh
+# Keys were never backed up — get new ones. HAProxy is not running yet, so
+# issue-cert.sh binds :80 itself, and it distributes each one.
+sudo /opt/notification-hub/bin/issue-cert.sh ntfy.example.com
+# ... repeat for each lineage in domains.map, with the same names it had ...
+# Wildcards: recreate the DNS credential file first (it is not backed up),
+# then e.g.  sudo /opt/notification-hub/bin/issue-cert.sh '*.example.com' example.com
+# See docs/certificates.md, "After a restore".
 
 sudo ./bootstrap.sh 80-haproxy.sh 90-docker-apps.sh 60-syslog.sh 95-backup.sh
 ```

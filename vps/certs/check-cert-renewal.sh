@@ -10,6 +10,7 @@ set -euo pipefail
 HUB_ENV="${HUB_ENV:-/etc/notification-hub/hub.env}"
 DOMAINS_MAP="${DOMAINS_MAP:-/etc/notification-hub/domains.map}"
 LE_LIVE="${LE_LIVE:-/etc/letsencrypt/live}"
+LE_RENEWAL="${LE_RENEWAL:-/etc/letsencrypt/renewal}"
 
 [[ -f "$HUB_ENV" ]] && { set -a; source "$HUB_ENV"; set +a; }
 
@@ -39,9 +40,14 @@ threshold_seconds=$(( THRESHOLD_DAYS * 86400 ))
 log "threshold: ${THRESHOLD_DAYS} day(s)"
 
 renewed_any=0
+# A lineage may appear on several lines (one wildcard copied to several
+# destinations); it is checked once.
+declare -A seen=()
 
 while read -r domain _dest _owner _format _service _rest; do
   [[ -z "${domain:-}" || "${domain:0:1}" == "#" ]] && continue
+  [[ -n "${seen[$domain]:-}" ]] && continue
+  seen[$domain]=1
 
   cert="$LE_LIVE/$domain/fullchain.pem"
   if [[ ! -f "$cert" ]]; then
@@ -62,10 +68,17 @@ while read -r domain _dest _owner _format _service _rest; do
     continue
   fi
 
+  # Only HTTP-01 lineages listen on a port. DNS-01 ones (wildcards) renew with
+  # the plugin and credentials recorded in their renewal config.
+  port_args=()
+  if grep -qE '^authenticator *= *standalone' "$LE_RENEWAL/$domain.conf" 2>/dev/null; then
+    port_args=(--http-01-port "$ACME_HTTP_PORT")
+  fi
+
   # --force-renewal because certbot would otherwise decline: by its own 30-day
   # rule the certificate is not due, but by ours it is.
   if certbot renew --cert-name "$domain" --force-renewal --non-interactive --quiet \
-       --http-01-port "$ACME_HTTP_PORT"; then
+       "${port_args[@]}"; then
     log "$domain: renewed"
     renewed_any=1
   else

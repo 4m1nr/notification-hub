@@ -212,6 +212,13 @@ for d in ntfy.example.com rss.example.com watch.example.com checks.example.com; 
 done
 ```
 
+> **One certificate for several names, or a wildcard?** Both are supported:
+> `issue-cert.sh ntfy.example.com rss.example.com` gives one multi-name
+> certificate (lineage `ntfy.example.com`, so one `domains.map` line), and
+> `issue-cert.sh '*.example.com' example.com` a wildcard — which Let's Encrypt
+> only issues over DNS, so it needs a DNS API token first. Setup, renewal,
+> changing names and removal: [`docs/certificates.md`](certificates.md).
+
 > **Do not call `certbot certonly --standalone` directly.** `70-certs.sh` sets
 > `http-01-port` in `/etc/letsencrypt/cli.ini` so certbot stays off HAProxy's
 > `:80`, which means a bare call before HAProxy exists listens on a port
@@ -220,7 +227,8 @@ done
 **Check:**
 
 ```bash
-ls -l /etc/certs/proxy/combined/                       # one .pem per domain, mode 640
+ls -l /etc/certs/proxy/combined/                       # one .pem per lineage, mode 640
+sudo /opt/notification-hub/bin/issue-cert.sh --list    # names, challenge, days left
 ls /var/lib/notification-hub/pending-restart/          # a queued 'haproxy' flag
 ```
 

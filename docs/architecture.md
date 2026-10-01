@@ -143,6 +143,12 @@ every lineage's renewal config, so no certbot invocation falls back to :80.
 New domains are issued with `issue-cert.sh`, which binds :80 directly only when
 nothing holds it (the first install, before HAProxy exists).
 
+Wildcard certificates cannot be validated over HTTP, so lineages that contain
+one (or are issued with `--dns`) use a certbot DNS plugin instead
+(`ACME_DNS_PLUGIN`); the plugin and its credential path are recorded in the
+lineage's renewal config, and the rest of the pipeline is identical. See
+`docs/certificates.md`.
+
 Adding a domain is one line in `/etc/notification-hub/domains.map`.
 
 ## Alerting: silence is the signal

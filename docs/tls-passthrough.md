@@ -92,7 +92,9 @@ terminates — which includes passthrough domains with the `terminate` option.
 If the backend's own certificate comes from certbot on this host, issue it with
 `issue-cert.sh <domain>`, never `certbot certonly --standalone`: HAProxy owns
 `:80` and forwards challenges to `ACME_HTTP_PORT`, and a bare certbot call
-that tries to bind `:80` fails with *Could not bind TCP port 80*.
+that tries to bind `:80` fails with *Could not bind TCP port 80*. Wildcard and
+multi-name certificates are covered in `docs/certificates.md`; a wildcard here
+also satisfies `terminate` domains under it.
 
 ## The backend sees HAProxy's IP, not the client's
 
