@@ -51,7 +51,11 @@ while read -r domain _dest _owner _format _service _rest; do
 
   cert="$LE_LIVE/$domain/fullchain.pem"
   if [[ ! -f "$cert" ]]; then
-    log "$domain: no certificate issued yet — run certbot certonly for it first"
+    if [[ -e "$LE_LIVE/$domain" ]]; then
+      log "$domain: BROKEN lineage — its files lead nowhere, so it cannot be renewed (see: issue-cert.sh --list)"
+    else
+      log "$domain: no certificate issued yet — run issue-cert.sh for it first"
+    fi
     continue
   fi
 

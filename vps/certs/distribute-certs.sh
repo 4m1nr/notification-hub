@@ -65,7 +65,12 @@ while read -r domain dest owner format service _rest; do
 
   live="$LE_LIVE/$domain"
   if [[ ! -f "$live/fullchain.pem" || ! -f "$live/privkey.pem" ]]; then
-    log "no certificate yet for $domain — skipping"
+    if [[ -e "$live" ]]; then
+      log "BROKEN lineage $domain: its files in $live lead nowhere — skipping;"
+      log "  the copy under $dest is NOT being refreshed (see: issue-cert.sh --list)"
+    else
+      log "no certificate yet for $domain — skipping"
+    fi
     continue
   fi
 
