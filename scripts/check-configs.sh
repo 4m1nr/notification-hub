@@ -65,13 +65,16 @@ mkdir -p "$WORK/conf.d"
   printf 'cdn.example.com     127.0.0.1:9444  terminate proxy-protocol cloudflare-only\n'
   printf '*.wild.example.com  127.0.0.1:9445  cloudflare-only\n'
   printf 'own.wild.example.com 127.0.0.1:9446\n'
-  printf '*.term.example.com  127.0.0.1:9447  terminate\n'; } > "$WORK/passthrough.conf"
+  printf '*.term.example.com  127.0.0.1:9447  terminate\n'
+  printf 'alt.example.com     127.0.0.1:9448  port=8443\n'
+  printf 'dual.example.com    127.0.0.1:9449  terminate port=443,8443\n'; } > "$WORK/passthrough.conf"
 # Redirects: a redirect-only host, a whole-host one, and one on a terminated
 # wildcard, which must not add an entry of its own.
 { printf 'go.example.com/sub      https://a.example.net/sub\n'
   printf 'go.example.com/sub/x    https://b.example.net/     301\n'
   printf 'old.example.com         https://new.example.net    308\n'
-  printf 'app.term.example.com/dl https://dl.example.net     drop-path\n'; } > "$WORK/redirects.conf"
+  printf 'app.term.example.com/dl https://dl.example.net     drop-path\n'
+  printf 'side.example.com/s      https://s.example.net/s    port=9443\n'; } > "$WORK/redirects.conf"
 # The generated conf.d names host paths; they are rewritten below to the
 # container's mount point, like the main config's.
 PASSTHROUGH_TABLE="$WORK/passthrough.conf" PASSTHROUGH_MAP="$WORK/sni-passthrough.map" \
@@ -162,6 +165,23 @@ if grep -qx 'go.example.com be_pt_terminate' "$WORK/sni-passthrough.map" \
   echo "    HTTP redirects rendered correctly"
 else
   echo "    HTTP redirects did not render correctly"; fail=1
+fi
+
+# A port= entry is kept off 443 (be_reject in the 443 map) and gets its own
+# listener; 443+8443 is on both; a redirect on another port gets a listener and
+# stays off port 80's list; plain HTTP on the extra ports goes to pt_http_in.
+if grep -qx 'alt.example.com be_reject' "$WORK/sni-passthrough.map" \
+   && grep -qx 'dual.example.com be_pt_terminate' "$WORK/sni-passthrough.map" \
+   && grep -qx 'side.example.com be_reject' "$WORK/sni-passthrough.map" \
+   && ! grep -qx 'side.example.com' "$WORK/redirect-hosts.lst" \
+   && grep -q '^frontend pt_port_8443' "$cfg" && grep -q '^frontend pt_port_9443' "$cfg" \
+   && grep -qF 'use_backend be_pt_alt_example_com if tls_hello { var(txn.pt_key) -m str alt.example.com }' "$cfg" \
+   && grep -qF 'use_backend be_pt_terminate if tls_hello { var(txn.pt_key) -m str dual.example.com }' "$cfg" \
+   && grep -q '^frontend pt_http_in' "$cfg" \
+   && grep -qF '{ hdr(host),field(1,:),lower -m str side.example.com } { dst_port 9443 }' "$cfg"; then
+  echo "    port= listeners rendered correctly"
+else
+  echo "    port= listeners did not render correctly"; fail=1
 fi
 
 echo "==> rsyslog"

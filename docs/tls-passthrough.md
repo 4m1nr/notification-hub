@@ -6,11 +6,13 @@ untouched, so that service keeps terminating its own TLS and never knows a proxy
 is in front of it.
 
 ```
-:443 ──▶ inspect SNI ──┬── exact name in passthrough.conf ──▶ its target, handshake untouched
+:443 (and each port= port, for the entries naming it)
+     ──▶ inspect SNI ──┬── exact name in passthrough.conf ──▶ its target, handshake untouched
                        │     (or decrypted here, for 'terminate' and redirect hosts)
                        ├── one of the hub's 4 domains ──▶ TLS terminated here
                        ├── matches a '*.x.y' in passthrough.conf ──▶ the wildcard's target
                        └── anything else, or no SNI ──▶ silent-drop
+    (plain HTTP on a port= port ──▶ its redirect, or https on the same port)
 ```
 
 ## The routing table is not in git
@@ -121,6 +123,7 @@ Options, after the destination:
 |---|---|
 | `301` `302` `303` `307` `308` | status code; default **302** (temporary). Browsers cache 301/308 indefinitely, so only use them once the target is final. 307/308 keep the method and body of a POST. |
 | `drop-path` | always send to the destination exactly, ignoring the rest of the path and the query |
+| `port=N[,N...]` | answer on these HTTPS ports instead of 443 (and its HTTP side, 80); see *Listening on other ports* |
 
 ```bash
 sudo /opt/notification-hub/bin/passthrough.sh redirect add old.example.com https://new.example.com 308
@@ -160,6 +163,56 @@ redirect source. A destination under its own source (`x.example.com` →
 `add` checks all of this before it touches the running proxy, and puts the
 table back as it was if anything is rejected.
 
+## Listening on other ports
+
+Every entry listens on 443 unless it says otherwise. `port=` replaces that with
+one or more ports of your choosing, for passthrough lines and redirects alike:
+
+```bash
+sudo /opt/notification-hub/bin/passthrough.sh add app.example.com 127.0.0.1:9000 port=8443
+sudo /opt/notification-hub/bin/passthrough.sh add both.example.com 127.0.0.1:9001 port=443,8443
+sudo /opt/notification-hub/bin/passthrough.sh redirect add go.example.com/x https://a.example.net/x port=9443
+```
+
+On a port other than 443, HAProxy opens a listener of its own that:
+
+| Arrives on that port | Result |
+|---|---|
+| TLS whose SNI is an entry naming the port | routed exactly as on 443: passthrough, `terminate` or redirects |
+| plain HTTP for such a host | `301` to `https://<host>:<port>/<same path>`, or, for a redirect host, straight to the redirect's destination |
+| any other SNI or Host, no SNI, or neither TLS nor HTTP | **silently dropped**; the client waits until it times out |
+
+An entry with `port=8443` is no longer served on 443 at all. List both
+(`port=443,8443`) to keep it on 443. Port 443 always comes with plain HTTP on
+80. Port 80 cannot be listed itself, and neither can `ACME_HTTP_PORT`.
+
+Names resolve the same way on every port: the exact line first, then the
+wildcard. So an exception keeps its own ports too. With `*.example.com port=8443`
+and `z.example.com` (default 443), `z.example.com` is served on 443 only and is
+dropped on 8443; it never falls back to the wildcard.
+
+A redirect's ports must be ones its host is decrypted on. A redirect on a
+`terminate` line, or under a `terminate` wildcard, may only use ports that line
+listens on, and `add` says so if not. Redirect-only hosts get whatever ports
+their redirects name.
+
+**What you need to do for a new port:**
+
+1. **Open it in the firewall.** `sync` warns when ufw is active and does not
+   allow the port yet. It never changes the firewall itself:
+   `sudo ufw allow 8443/tcp comment 'notification-hub haproxy'`. Do the same in
+   any cloud-provider firewall in front of the VPS.
+2. **Nothing else may use the port.** `sync` refuses one that another process
+   holds, since HAProxy could not bind it.
+3. **Behind Cloudflare,** only Cloudflare's proxied ports work through the
+   orange cloud: HTTPS 443, 2053, 2083, 2087, 2096, 8443, and HTTP 80, 8080,
+   8880, 2052, 2082, 2086, 2095. Any other port needs a grey-cloud (DNS-only)
+   record, and then `cloudflare-only` would drop every client.
+4. **Certificates** are unchanged: a `terminate` or redirect host needs one here
+   whatever port it is on, and passthrough hosts present their own.
+
+`list` and `redirect list` show each entry's `port=`.
+
 ## Editing the table by hand
 
 ```bash
@@ -176,7 +229,7 @@ other.example.com            127.0.0.1:9000    proxy-protocol cloudflare-only
 ```
 
 The domain may be a `*.x.y` wildcard (see above). Options, any number,
-space-separated: `proxy-protocol` / `proxy-protocol-v1`
+space-separated: `port=N[,N...]` (above), `proxy-protocol` / `proxy-protocol-v1`
 (below), `cloudflare-only` and `terminate` (both under *Behind Cloudflare*).
 
 `sync` is idempotent, and refuses to reload if the resulting configuration does

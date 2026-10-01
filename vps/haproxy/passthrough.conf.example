@@ -21,6 +21,11 @@
 #                       anyone else is silently dropped. For a proxied (orange
 #                       cloud) record whose origin must not be reachable
 #                       directly.
+#   port=N[,N...]       Listen on these ports instead of 443 (list 443 too to
+#                       keep it). Each such port gets a listener that serves
+#                       only the entries naming it, redirects plain HTTP for
+#                       them to https on the same port, and silently drops
+#                       everything else. Open the port in the firewall.
 #   terminate           Decrypt here and re-encrypt to the backend, instead of
 #                       passing the handshake through. Behind Cloudflare, plain
 #                       passthrough only ever sees the edge's address — the real
@@ -59,3 +64,4 @@
 #cdn.example.com             127.0.0.1:443           terminate proxy-protocol cloudflare-only
 #*.apps.example.com          127.0.0.1:444           cloudflare-only
 #admin.apps.example.com      127.0.0.1:445
+#alt.example.com             127.0.0.1:446           port=8443

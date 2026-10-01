@@ -64,6 +64,8 @@ usage: $0 <command> [args]
                                                   the backend, so the client
                                                   behind Cloudflare is known;
                                                   needs a certificate here
+                               port=N[,N...]      listen on these ports instead
+                                                  of 443 (see below)
   remove <domain>            Remove a domain and apply
   sync                       Regenerate, validate and reload after editing
                              $TABLE or $REDIRECT_TABLE by hand
@@ -76,8 +78,14 @@ usage: $0 <command> [args]
                                x.y/sub/p?q=1 to https://a.b.c/sub/p?q=1
                              code: 301 302 303 307 308 (default 302)
                              drop-path: always send to the destination as is
+                             port=N[,N...]: HTTPS ports instead of 443
   redirect remove <host[/path]>
                              Remove a redirect and apply
+
+Ports: 443 is the default and pairs with plain HTTP on 80. Any other port
+gets a listener of its own, which serves only the entries naming it: TLS for
+them is routed as on 443, plain HTTP for them is redirected to
+https://<host>:<port>, and anything else on that port is silently dropped.
 
 Adding a domain by hand is just a line in $TABLE followed by '$0 sync'.
 EOF
@@ -98,13 +106,58 @@ backend_name() {
   printf 'be_pt_%s' "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '_')"
 }
 
+# check_ports validates the value of a port= option: distinct ports, no
+# leading zeros (bash would read them as octal), and never 80, which is the
+# plain-HTTP side of 443.
+check_ports() {
+  local where="$1" list="$2" p seen=" "
+  [[ "$list" =~ ^[1-9][0-9]*(,[1-9][0-9]*)*$ ]] \
+    || die "$where: port= takes a comma-separated list of ports, got '$list'"
+  for p in ${list//,/ }; do
+    (( p <= 65535 )) || die "$where: port $p is out of range"
+    (( p != 80 )) || die "$where: port 80 is the plain-HTTP side of 443; list 443 instead"
+    [[ "$seen" != *" $p "* ]] || die "$where: port $p is listed twice"
+    seen+="$p "
+  done
+}
+
+# ports_of prints an entry's ports, comma-separated: its port= option, or 443.
+ports_of() {
+  local opt
+  for opt in "$@"; do
+    [[ "$opt" == port=* ]] && { printf '%s\n' "${opt#port=}"; return 0; }
+  done
+  printf '443\n'
+}
+
+# has_port <ports> <port> succeeds when the comma-separated list contains it.
+has_port() { [[ ",$1," == *",$2,"* ]]; }
+
+# ports_within <ports> <of> succeeds when every port in the first list is in
+# the second.
+ports_within() {
+  local p
+  for p in ${1//,/ }; do has_port "$2" "$p" || return 1; done
+}
+
+# merge_ports prints the union of two comma-separated lists, sorted.
+merge_ports() {
+  printf '%s\n' ${1//,/ } ${2//,/ } | sort -nu | paste -sd, -
+}
+
 # check_options rejects unknown options and contradictory combinations.
 check_options() {
-  local where="$1" opt; shift
+  local where="$1" opt nports=0; shift
   for opt in "$@"; do
+    if [[ "$opt" == port=* ]]; then
+      check_ports "$where" "${opt#port=}"
+      nports=$((nports + 1))
+      continue
+    fi
     [[ " $VALID_OPTIONS " == *" $opt "* ]] \
-      || die "unknown option '$opt' for $where — valid: ${VALID_OPTIONS// /, }"
+      || die "unknown option '$opt' for $where — valid: ${VALID_OPTIONS// /, }, port=N[,N...]"
   done
+  (( nports <= 1 )) || die "$where: port= given more than once"
   if has_option proxy-protocol "$@" && has_option proxy-protocol-v1 "$@"; then
     die "$where: proxy-protocol and proxy-protocol-v1 are mutually exclusive"
   fi
@@ -182,14 +235,19 @@ check_redirect() {
     || die "$where: '$host' is not a hostname (redirect sources cannot be wildcards)"
   [[ "$dest" =~ ^https?://[A-Za-z0-9.-]+(:[0-9]+)?(/[A-Za-z0-9._~/-]*)?$ ]] \
     || die "$where: destination '$dest' must be http(s)://host[:port][/path] (letters, digits, . _ ~ - /)"
+  local nports=0
   for opt in "$@"; do
     if [[ " $VALID_REDIRECT_CODES " == *" $opt "* ]]; then
       [[ -z "$code" ]] || die "$where: more than one status code"
       code="$opt"
+    elif [[ "$opt" == port=* ]]; then
+      check_ports "$where" "${opt#port=}"
+      nports=$((nports + 1))
     elif [[ "$opt" != drop-path ]]; then
-      die "$where: unknown redirect option '$opt' — valid: ${VALID_REDIRECT_CODES// /, }, drop-path"
+      die "$where: unknown redirect option '$opt' — valid: ${VALID_REDIRECT_CODES// /, }, drop-path, port=N[,N...]"
     fi
   done
+  (( nports <= 1 )) || die "$where: port= given more than once"
 
   # A destination under its own source redirects to itself forever.
   local rest="${dest#*://}" dhost dpath=""
@@ -201,23 +259,27 @@ check_redirect() {
   fi
 }
 
-# read_redirects emits "host|path|dest|code|drop" for each
+# read_redirects emits "host|path|dest|code|drop|ports" for each
 # active line, longest path first within a host so the most specific prefix
 # wins whatever the order of the file.
 read_redirects() {
   [[ -f "$REDIRECT_TABLE" ]] || return 0
-  local source dest options host path opt code drop
+  local source dest options host path opt code drop ports
   while read -r source dest options; do
     [[ -z "${source:-}" || "${source:0:1}" == "#" ]] && continue
     [[ -n "${dest:-}" ]] || die "line for '$source' in $REDIRECT_TABLE has no destination"
     # shellcheck disable=SC2086
     check_redirect "'$source' in $REDIRECT_TABLE" "$source" "$dest" ${options:-}
     IFS='|' read -r host path < <(split_source "$source")
-    code=302 drop=0
+    code=302 drop=0 ports=443
     for opt in ${options:-}; do
-      case "$opt" in drop-path) drop=1 ;; *) code="$opt" ;; esac
+      case "$opt" in
+        drop-path) drop=1 ;;
+        port=*)    ports="${opt#port=}" ;;
+        *)         code="$opt" ;;
+      esac
     done
-    printf '%s|%s|%s|%s|%s|%s\n' "${#path}" "$host" "$path" "$dest" "$code" "$drop"
+    printf '%s|%s|%s|%s|%s|%s|%s\n' "${#path}" "$host" "$path" "$dest" "$code" "$drop" "$ports"
   done < "$REDIRECT_TABLE" | sort -t'|' -k2,2 -k1,1nr | cut -d'|' -f2-
 }
 
@@ -233,12 +295,25 @@ hub_domains() {
   ) | tr '[:upper:]' '[:lower:]' | grep -v '^$' || true
 }
 
-# redirect_rules emits the http-request rules for every redirect, at the given
-# indent. Used in the decrypting frontend and in the port-80 backend alike.
+# redirect_rules <scope> emits the http-request rules for the redirects on
+# stdin. The scope decides which redirects apply and how the port is checked:
+#   tls    decrypted traffic on any port; each rule checks dst_port
+#   http80 plain HTTP on 80, i.e. the redirects served on 443; no port check
+#   httpx  plain HTTP on the other ports; each rule checks dst_port
 redirect_rules() {
-  local host path dest code drop host_acl location
-  while IFS='|' read -r host path dest code drop; do
+  local scope="$1"
+  local host path dest code drop ports host_acl location rule_ports p
+  while IFS='|' read -r host path dest code drop ports; do
+    case "$scope" in
+      tls)    rule_ports="${ports//,/ }" ;;
+      http80) has_port "$ports" 443 || continue; rule_ports="" ;;
+      httpx)
+        rule_ports=""
+        for p in ${ports//,/ }; do [[ "$p" == 443 ]] || rule_ports+="$p "; done
+        [[ -n "$rule_ports" ]] || continue ;;
+    esac
     host_acl="{ hdr(host),field(1,:),lower -m str $host }"
+    [[ -n "$rule_ports" ]] && host_acl+=" { dst_port ${rule_ports% } }"
     if (( drop )); then
       location="$dest"
     elif [[ -z "$path" ]]; then
@@ -274,7 +349,7 @@ cmd_list() {
 }
 
 generate() {
-  # Parse the table once in this shell first. read_table also feeds the loop
+  # Parse both tables once in this shell first. read_table also feeds the loop
   # below through a process substitution, where its die() would end only that
   # subshell — and an invalid line would then regenerate an empty map, dropping
   # every route instead of refusing to change anything.
@@ -284,19 +359,24 @@ generate() {
   install -d -m 0755 "$CONF_D"
 
   local tmp_map tmp_cfg tmp_cf tmp_term tmp_rd count=0
-  local terminated=() redirect_only=()
+  # terminated: keys decrypted here for their own target. redirect_only: hosts
+  # that exist here only for redirects. served: "key|ports|backend" for every
+  # key with a route, which drives the per-port listeners and port checks.
+  local terminated=() redirect_only=() served=()
   tmp_map="$(mktemp)"; tmp_cfg="$(mktemp)"; tmp_cf="$(mktemp)"; tmp_term="$(mktemp)"
   tmp_rd="$(mktemp)"
   read_redirects > "$tmp_rd"
 
   {
     echo "# Generated by passthrough.sh from $TABLE — do not edit."
-    echo "# SNI hostname -> backend name"
+    echo "# SNI hostname -> backend name, as routed on :443. Every entry is listed,"
+    echo "# so a name resolves to its own entry on any port; one not served on 443"
+    echo "# maps to be_reject here."
   } > "$tmp_map"
   {
     echo "# Generated by passthrough.sh from $TABLE — do not edit."
     echo "# TLS passthrough backends. Each keeps its own TLS termination,"
-    echo "# except the 'terminate' domains at the end of this file."
+    echo "# except the 'terminate' domains further down this file."
     echo
   } > "$tmp_cfg"
   {
@@ -304,10 +384,11 @@ generate() {
     echo "# Passthrough SNIs that only Cloudflare's edge may connect to."
   } > "$tmp_cf"
 
-  local domain target options be pp opts
+  local domain target options be pp opts ports route
   while IFS=$'\t' read -r domain target options; do
     read -ra opts <<< "$options"
     be="$(backend_name "$domain")"
+    ports="$(ports_of "${opts[@]}")"
 
     has_option cloudflare-only "${opts[@]}" && printf '%s\n' "$domain" >> "$tmp_cf"
 
@@ -321,7 +402,7 @@ generate() {
 
     if has_option terminate "${opts[@]}"; then
       # Routed through pt_https_in below rather than straight to the target.
-      printf '%s %s\n' "$domain" be_pt_terminate >> "$tmp_map"
+      route=be_pt_terminate
       terminated+=("$domain")
       has_certificate "$domain" || {
         log "WARNING: no certificate in $CERT_DIR covers $domain."
@@ -345,7 +426,7 @@ generate() {
           "$target" "$domain" "$pp"
       } >> "$tmp_term"
     else
-      printf '%s %s\n' "$domain" "$be" >> "$tmp_map"
+      route="$be"
       {
         printf 'backend %s\n' "$be"
         printf '    mode tcp\n'
@@ -354,24 +435,31 @@ generate() {
         printf '    server target %s%s\n\n' "$target" "$pp"
       } >> "$tmp_cfg"
     fi
+    if has_port "$ports" 443; then
+      printf '%s %s\n' "$domain" "$route" >> "$tmp_map"
+    else
+      printf '%s be_reject\n' "$domain" >> "$tmp_map"
+    fi
+    served+=("$domain|$ports|$route")
     count=$((count + 1))
   done < <(read_table)
 
   # --- HTTP redirects ---
   # A path is only visible once TLS is decrypted, so every redirect host must
-  # reach pt_https_in: through its own 'terminate' line or a 'terminate'
-  # wildcard over it, or else through an entry added here for it alone.
-  local hubs rhost wild wild_opts exact_opts n_redirects
+  # reach pt_https_in on each of its ports: through its own 'terminate' line or
+  # a 'terminate' wildcard over it that listens there, or else through an
+  # entry added here for it alone.
+  local hubs rhost wild wild_opts exact_opts n_redirects line_ports
+  local -A rports=()
   hubs="$(hub_domains)"
   n_redirects="$(grep -c . "$tmp_rd" || true)"
-  {
-    echo "# Generated by passthrough.sh from $REDIRECT_TABLE — do not edit."
-    echo "# Hosts with HTTP redirects; port 80 sends them to be_http_redirects."
-    cut -d'|' -f1 "$tmp_rd" | sort -u
-  } > "$tmp_rd.hosts"
+  while IFS='|' read -r rhost _ _ _ _ ports; do
+    rports[$rhost]="$(merge_ports "${rports[$rhost]:-}" "$ports")"
+  done < "$tmp_rd"
 
   while read -r rhost; do
     [[ -n "$rhost" ]] || continue
+    ports="${rports[$rhost]}"
     grep -qxF "$rhost" <<< "$hubs" \
       && die "redirect source $rhost is one of the hub's own domains; redirects cannot take those over"
     exact_opts="$(read_table | awk -F'\t' -v d="$rhost" '$1 == d {print $3 "|"}')"
@@ -382,49 +470,117 @@ generate() {
       has_option terminate ${exact_opts%|} \
         || die "redirect source $rhost is a plain passthrough domain in $TABLE; its TLS is never
   decrypted here, so no path can be seen. Add the 'terminate' option to its line, or remove the line."
+      # shellcheck disable=SC2086
+      line_ports="$(ports_of ${exact_opts%|})"
+      ports_within "$ports" "$line_ports" \
+        || die "redirects for $rhost use port(s) $ports, but its line in $TABLE listens on $line_ports only"
       continue
     fi
     # shellcheck disable=SC2086
     if [[ -n "$wild_opts" ]] && has_option terminate ${wild_opts%|}; then
+      # shellcheck disable=SC2086
+      line_ports="$(ports_of ${wild_opts%|})"
+      ports_within "$ports" "$line_ports" \
+        || die "redirects for $rhost use port(s) $ports, but $wild listens on $line_ports only"
       continue    # decrypted already; other paths keep going to the wildcard's target
     fi
     [[ -n "$wild_opts" ]] && log "NOTE: $rhost now ends here instead of at $wild's target; paths without a redirect get 404"
-    printf '%s %s\n' "$rhost" be_pt_terminate >> "$tmp_map"
+    if has_port "$ports" 443; then
+      printf '%s be_pt_terminate\n' "$rhost" >> "$tmp_map"
+    else
+      printf '%s be_reject\n' "$rhost" >> "$tmp_map"
+    fi
     redirect_only+=("$rhost")
+    served+=("$rhost|$ports|be_pt_terminate")
     has_certificate "$rhost" || {
       log "WARNING: no certificate in $CERT_DIR covers $rhost."
       log "  HTTPS redirects are answered here, so HAProxy needs one: add $rhost to"
       log "  /etc/notification-hub/domains.map (format combined, service haproxy),"
       log "  then: sudo /opt/notification-hub/bin/issue-cert.sh $rhost"
     }
-  done < <(sed '/^#/d' "$tmp_rd.hosts")
+  done < <(printf '%s\n' "${!rports[@]}" | sort)
+
+  # Ports other than 443, each with a listener of its own.
+  local extra_ports=() item p
+  for item in "${served[@]}"; do
+    IFS='|' read -r _ ports _ <<< "$item"
+    for p in ${ports//,/ }; do [[ "$p" == 443 ]] || extra_ports+=("$p"); done
+  done
+  mapfile -t extra_ports < <(printf '%s\n' "${extra_ports[@]}" | sed '/^$/d' | sort -nu)
+  for p in "${extra_ports[@]}"; do check_listen_port "$p"; done
 
   if (( ${#terminated[@]} + ${#redirect_only[@]} )); then
-    write_terminate_frontend "$tmp_rd" "${#terminated[@]}" "${terminated[@]}" "${redirect_only[@]}" >> "$tmp_cfg"
+    write_terminate_frontend >> "$tmp_cfg"
     cat "$tmp_term" >> "$tmp_cfg"
   fi
+  if (( ${#extra_ports[@]} )); then
+    write_port_frontends >> "$tmp_cfg"
+  fi
 
-  # Port 80 hands every redirect host to this backend, so a plain-HTTP request
-  # goes straight to its destination instead of first being sent to HTTPS on
-  # the same host. Paths without a redirect still get that HTTPS upgrade. It is
-  # always generated: haproxy.cfg refers to it even when the table is empty.
+  # Port 80 hands every host with a redirect on 443 to this backend, so a
+  # plain-HTTP request goes straight to its destination instead of first being
+  # sent to HTTPS on the same host. Paths without a redirect still get that
+  # HTTPS upgrade. It is always generated: haproxy.cfg refers to it even when
+  # the table is empty.
   {
     echo "#-----------------------------------------------------------------------------"
     echo "# HTTP redirects on port 80, from $REDIRECT_TABLE."
     echo "#-----------------------------------------------------------------------------"
     echo "backend be_http_redirects"
     echo "    mode http"
-    redirect_rules < "$tmp_rd"
+    redirect_rules http80 < "$tmp_rd"
     echo "    http-request redirect scheme https code 301"
     echo
   } >> "$tmp_cfg"
+  {
+    echo "# Generated by passthrough.sh from $REDIRECT_TABLE — do not edit."
+    echo "# Hosts with HTTP redirects on 443; port 80 sends them to be_http_redirects."
+    awk -F'|' '{ if (index("," $6 ",", ",443,")) print $1 }' "$tmp_rd" | sort -u
+  } > "$tmp_rd.hosts"
 
   install -m 0644 "$tmp_map" "$MAP"
   install -m 0644 "$tmp_cfg" "$GENERATED"
   install -m 0644 "$tmp_cf" "$CF_ONLY_LIST"
   install -m 0644 "$tmp_rd.hosts" "$REDIRECT_HOSTS_LIST"
   rm -f "$tmp_map" "$tmp_cfg" "$tmp_cf" "$tmp_term" "$tmp_rd" "$tmp_rd.hosts"
-  log "generated $count passthrough backend(s)${terminated[*]:+, ${#terminated[@]} terminated here}, $n_redirects redirect(s)"
+  log "generated $count passthrough backend(s)${terminated[*]:+, ${#terminated[@]} terminated here}, $n_redirects redirect(s)${extra_ports[*]:+, extra port(s) ${extra_ports[*]}}"
+}
+
+# check_listen_port refuses a port something other than HAProxy already holds
+# (HAProxy would fail to bind it on reload), and says how to open it when ufw
+# is active and does not allow it yet. It never changes the firewall itself.
+check_listen_port() {
+  local port="$1" holder acme
+  # certbot binds this only while renewing, so ss would not see the clash.
+  # shellcheck disable=SC1090
+  acme="$( [[ -r "$HUB_ENV" ]] && (set +u; source "$HUB_ENV" >/dev/null 2>&1; printf '%s' "${ACME_HTTP_PORT:-}") || true)"
+  [[ "$port" != "${acme:-8402}" ]] \
+    || die "port $port is ACME_HTTP_PORT, where certbot answers challenges; pick another port"
+  holder="$(ss -ltnpH "sport = :$port" 2>/dev/null | grep -oE 'users:\(\("[^"]+"' | head -n1 | cut -d'"' -f2 || true)"
+  [[ -z "$holder" || "$holder" == haproxy ]] \
+    || die "port $port is already used by '$holder'; pick another port"
+  if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | head -1 | grep -q 'active$' \
+     && ! ufw status 2>/dev/null | grep -qE "^${port}(/tcp)?[[:space:]]+ALLOW"; then
+    log "WARNING: ufw does not allow ${port}/tcp yet, so nothing can reach it. Open it with:"
+    log "  sudo ufw allow ${port}/tcp comment 'notification-hub haproxy'"
+  fi
+}
+
+# port_ok_rules <rule> <port...> emits, per port, one rule that marks the
+# transaction as allowed when its resolved entry is served on the port it
+# arrived on. Reads the caller's served array.
+port_ok_rules() {
+  local rule="$1"; shift
+  local port item key ports keys
+  for port in "$@"; do
+    keys=""
+    for item in "${served[@]}"; do
+      IFS='|' read -r key ports _ <<< "$item"
+      has_port "$ports" "$port" && keys+=" $key"
+    done
+    [[ -n "$keys" ]] && printf '    %s set-var(txn.port_ok) bool(1) if { var(txn.pt_key) -m str%s } { dst_port %s }\n' \
+      "$rule" "$keys" "$port"
+  done
 }
 
 # write_terminate_frontend emits the internal frontend that decrypts the
@@ -433,16 +589,18 @@ generate() {
 # CF-Connecting-IP, and after set-src the PROXY header sent to the target
 # carries the real client — the same treatment the hub's own domains get.
 # Redirects are answered here too, for the same reason: only decrypted traffic
-# has a path.
+# has a path. dst_port is the port the client connected to, carried in the
+# PROXY header from whichever listener accepted it.
 #
-#   write_terminate_frontend <redirects-file> <n-terminated> <terminated...> <redirect-only...>
+# Reads the caller's terminated, redirect_only, served and tmp_rd.
 write_terminate_frontend() {
   local cf_ips="${CLOUDFLARE_IPS_FILE:-/etc/haproxy/cloudflare-ips.lst}"
-  local redirects="$1" n_term="$2"; shift 2
-  local terminated=("${@:1:n_term}") redirect_only=("${@:n_term+1}")
+  local all_ports item ports
+  all_ports="$(for item in "${served[@]}"; do IFS='|' read -r _ ports _ <<< "$item"; printf '%s\n' ${ports//,/ }; done | sort -nu | tr '\n' ' ')"
   cat <<EOF
 #-----------------------------------------------------------------------------
-# 'terminate' domains: TLS is decrypted here and re-encrypted to the target.
+# 'terminate' domains and redirect hosts: TLS is decrypted here, and for the
+# former re-encrypted to the target.
 #-----------------------------------------------------------------------------
 backend be_pt_terminate
     mode tcp
@@ -467,6 +625,13 @@ frontend pt_https_in
     acl cf_only_host    var(txn.pt_key) -m str -f $CF_ONLY_LIST
     http-request silent-drop if cf_only_host !from_cloudflare
 
+    # Likewise a Host that is not served on the port this arrived on.
+EOF
+  # shellcheck disable=SC2086
+  port_ok_rules http-request $all_ports
+  cat <<EOF
+    http-request silent-drop unless { var(txn.port_ok) -m found }
+
     # CF-Connecting-IP is trusted only from Cloudflare's ranges, exactly as on
     # the hub's frontend; from anyone else it is deleted, so it cannot be forged.
     acl has_cf_ip req.hdr(CF-Connecting-IP) -m found
@@ -475,15 +640,13 @@ frontend pt_https_in
     http-request set-header X-Forwarded-Proto https
     http-request set-header X-Forwarded-For %[src]
 
-    acl known_host var(txn.pt_key) -m str $*
     acl acme_challenge path_beg /.well-known/acme-challenge/
-    http-request deny deny_status 421 unless known_host
     use_backend be_acme if acme_challenge
 EOF
-  if [[ -s "$redirects" ]]; then
+  if [[ -s "$tmp_rd" ]]; then
     echo
     echo "    # HTTP redirects, from $REDIRECT_TABLE. Longest prefix first per host."
-    redirect_rules < "$redirects"
+    redirect_rules tls < "$tmp_rd"
   fi
   if (( ${#redirect_only[@]} )); then
     echo "    # Hosts that exist here only for their redirects."
@@ -495,6 +658,76 @@ EOF
     printf '    use_backend %s if { var(txn.pt_key) -m str %s }\n' \
       "$(backend_name "$domain")" "$domain"
   done
+  echo
+}
+
+# write_port_frontends emits a listener for every port other than 443. Each
+# accepts TLS for the entries naming that port, routed exactly as on 443, and
+# plain HTTP for them, which pt_http_in redirects to https on the same port.
+# Anything else — another SNI, another Host, neither TLS nor HTTP — is silently
+# dropped, so the client is left to time out.
+#
+# Reads the caller's served and extra_ports.
+write_port_frontends() {
+  local cf_ips="${CLOUDFLARE_IPS_FILE:-/etc/haproxy/cloudflare-ips.lst}"
+  local port item key ports route
+  for port in "${extra_ports[@]}"; do
+    cat <<EOF
+#-----------------------------------------------------------------------------
+# Port $port: only the entries that name it.
+#-----------------------------------------------------------------------------
+frontend pt_port_$port
+    bind *:$port
+    mode tcp
+    option tcplog
+    timeout client 1h
+    tcp-request inspect-delay 5s
+
+    acl tls_hello       req.ssl_hello_type 1
+    acl is_http         req.proto_http
+    acl from_cloudflare src -f $cf_ips
+    acl pt_found        var(txn.pt_key) -m found
+    tcp-request content set-var(txn.pt_key) req.ssl_sni,lower if tls_hello { req.ssl_sni,lower,map($MAP) -m found }
+    tcp-request content set-var(txn.pt_key) req.ssl_sni,lower,regsub(^[^.]+[.],*.) if tls_hello !pt_found { req.ssl_sni,lower,regsub(^[^.]+[.],*.),map($MAP) -m found }
+    tcp-request content silent-drop if !from_cloudflare { var(txn.pt_key) -m str -f $CF_ONLY_LIST }
+    tcp-request content accept if tls_hello
+    tcp-request content accept if is_http
+
+EOF
+    for item in "${served[@]}"; do
+      IFS='|' read -r key ports route <<< "$item"
+      has_port "$ports" "$port" || continue
+      printf '    use_backend %s if tls_hello { var(txn.pt_key) -m str %s }\n' "$route" "$key"
+    done
+    printf '    use_backend be_pt_http if is_http\n'
+    printf '    default_backend be_reject\n\n'
+  done
+
+  cat <<EOF
+#-----------------------------------------------------------------------------
+# Plain HTTP on the ports above: redirects, then https on the same port.
+#-----------------------------------------------------------------------------
+backend be_pt_http
+    mode tcp
+    server local_pt_http abns@pt-http send-proxy-v2
+
+frontend pt_http_in
+    mode http
+    bind abns@pt-http accept-proxy
+
+    acl pt_found var(txn.pt_key) -m found
+    http-request set-var(txn.pt_key) hdr(host),field(1,:),lower if { hdr(host),field(1,:),lower,map($MAP) -m found }
+    http-request set-var(txn.pt_key) hdr(host),field(1,:),lower,regsub(^[^.]+[.],*.) if !pt_found { hdr(host),field(1,:),lower,regsub(^[^.]+[.],*.),map($MAP) -m found }
+
+    acl from_cloudflare src -f $cf_ips
+    acl cf_only_host    var(txn.pt_key) -m str -f $CF_ONLY_LIST
+    http-request silent-drop if cf_only_host !from_cloudflare
+EOF
+  port_ok_rules http-request "${extra_ports[@]}"
+  echo "    http-request silent-drop unless { var(txn.port_ok) -m found }"
+  echo
+  redirect_rules httpx < "$tmp_rd"
+  echo '    http-request redirect location https://%[hdr(host),field(1,:),lower]:%[dst_port]%[pathq] code 301'
   echo
 }
 
@@ -593,9 +826,10 @@ cmd_redirect() {
     list)
       [[ -s "$REDIRECT_TABLE" ]] || { log "no redirects configured"; return 0; }
       printf '%-36s %-40s %s\n' SOURCE DESTINATION OPTIONS >&2
-      local host path dest code drop
-      while IFS='|' read -r host path dest code drop; do
+      local host path dest code drop ports
+      while IFS='|' read -r host path dest code drop ports; do
         (( drop )) && code+=" drop-path"
+        [[ "$ports" == 443 ]] || code+=" port=$ports"
         printf '%-36s %-40s %s\n' "$host$path" "$dest" "$code" >&2
       done < <(read_redirects)
       ;;
