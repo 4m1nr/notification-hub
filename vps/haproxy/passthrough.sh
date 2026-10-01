@@ -133,11 +133,17 @@ ports_of() {
 # has_port <ports> <port> succeeds when the comma-separated list contains it.
 has_port() { [[ ",$1," == *",$2,"* ]]; }
 
-# ports_within <ports> <of> succeeds when every port in the first list is in
-# the second.
-ports_within() {
-  local p
-  for p in ${1//,/ }; do has_port "$2" "$p" || return 1; done
+# ports_and / ports_minus print the intersection / difference of two
+# comma-separated lists, comma-separated ("" when empty).
+ports_and() {
+  local p out=()
+  for p in ${1//,/ }; do has_port "$2" "$p" && out+=("$p"); done
+  local IFS=,; printf '%s\n' "${out[*]}"
+}
+ports_minus() {
+  local p out=()
+  for p in ${1//,/ }; do has_port "$2" "$p" || out+=("$p"); done
+  local IFS=,; printf '%s\n' "${out[*]}"
 }
 
 # merge_ports prints the union of two comma-separated lists, sorted.
@@ -359,10 +365,12 @@ generate() {
   install -d -m 0755 "$CONF_D"
 
   local tmp_map tmp_cfg tmp_cf tmp_term tmp_rd count=0
-  # terminated: keys decrypted here for their own target. redirect_only: hosts
-  # that exist here only for redirects. served: "key|ports|backend" for every
-  # key with a route, which drives the per-port listeners and port checks.
-  local terminated=() redirect_only=() served=()
+  # served: "key|ports|route" for every key with a route on some ports, which
+  # drives the per-port listeners and the port checks; route is be_pt_terminate
+  # for anything decrypted here. term_rules: "key|ports|backend" for decrypted
+  # traffic that goes on to a target. r404: "host|ports" where a host is
+  # decrypted only for its redirects, so other paths get 404.
+  local terminated=() served=() term_rules=() r404=()
   tmp_map="$(mktemp)"; tmp_cfg="$(mktemp)"; tmp_cf="$(mktemp)"; tmp_term="$(mktemp)"
   tmp_rd="$(mktemp)"
   read_redirects > "$tmp_rd"
@@ -404,6 +412,7 @@ generate() {
       # Routed through pt_https_in below rather than straight to the target.
       route=be_pt_terminate
       terminated+=("$domain")
+      term_rules+=("$domain|$ports|$be")
       has_certificate "$domain" || {
         log "WARNING: no certificate in $CERT_DIR covers $domain."
         log "  'terminate' decrypts here, so HAProxy needs one: add ${domain#\*.} to"
@@ -445,11 +454,14 @@ generate() {
   done < <(read_table)
 
   # --- HTTP redirects ---
-  # A path is only visible once TLS is decrypted, so every redirect host must
-  # reach pt_https_in on each of its ports: through its own 'terminate' line or
-  # a 'terminate' wildcard over it that listens there, or else through an
-  # entry added here for it alone.
-  local hubs rhost wild wild_opts exact_opts n_redirects line_ports
+  # A path is only visible once TLS is decrypted. On each of its redirect
+  # ports a host is either already decrypted here (its own 'terminate' line,
+  # or a 'terminate' wildcard over it, listens there) or is decrypted for its
+  # redirects alone, with 404 for other paths. A plain passthrough line on the
+  # same port would need the handshake left untouched, so that is refused; on
+  # its other ports the line is not affected at all.
+  local hubs rhost wild base base_opts base_ports base_route base_be overlap ronly takeover inherit
+  local n_redirects
   local -A rports=()
   hubs="$(hub_domains)"
   n_redirects="$(grep -c . "$tmp_rd" || true)"
@@ -462,36 +474,61 @@ generate() {
     ports="${rports[$rhost]}"
     grep -qxF "$rhost" <<< "$hubs" \
       && die "redirect source $rhost is one of the hub's own domains; redirects cannot take those over"
-    exact_opts="$(read_table | awk -F'\t' -v d="$rhost" '$1 == d {print $3 "|"}')"
+
+    # The entry the host resolves to without its redirects, if any.
     wild="*.${rhost#*.}"
-    wild_opts="$(read_table | awk -F'\t' -v d="$wild" '$1 == d {print $3 "|"}')"
-    if [[ -n "$exact_opts" ]]; then
+    base="" base_opts="" base_ports="" base_route="" base_be=""
+    for base in "$rhost" "$wild"; do
+      base_opts="$(read_table | awk -F'\t' -v d="$base" '$1 == d {print $3 "|"}')"
+      [[ -n "$base_opts" ]] && break
+    done
+    [[ -n "$base_opts" ]] || base=""
+    if [[ -n "$base" ]]; then
+      base_opts="${base_opts%|}"
       # shellcheck disable=SC2086
-      has_option terminate ${exact_opts%|} \
-        || die "redirect source $rhost is a plain passthrough domain in $TABLE; its TLS is never
-  decrypted here, so no path can be seen. Add the 'terminate' option to its line, or remove the line."
+      base_ports="$(ports_of $base_opts)"
+      base_be="$(backend_name "$base")"
       # shellcheck disable=SC2086
-      line_ports="$(ports_of ${exact_opts%|})"
-      ports_within "$ports" "$line_ports" \
-        || die "redirects for $rhost use port(s) $ports, but its line in $TABLE listens on $line_ports only"
-      continue
+      if has_option terminate $base_opts; then base_route=be_pt_terminate; else base_route="$base_be"; fi
     fi
-    # shellcheck disable=SC2086
-    if [[ -n "$wild_opts" ]] && has_option terminate ${wild_opts%|}; then
-      # shellcheck disable=SC2086
-      line_ports="$(ports_of ${wild_opts%|})"
-      ports_within "$ports" "$line_ports" \
-        || die "redirects for $rhost use port(s) $ports, but $wild listens on $line_ports only"
-      continue    # decrypted already; other paths keep going to the wildcard's target
+
+    overlap="$(ports_and "$ports" "$base_ports")"
+    takeover=""
+    if [[ -n "$overlap" && "$base_route" != be_pt_terminate ]]; then
+      [[ "$base" == "$rhost" ]] \
+        && die "redirect source $rhost is a plain passthrough line in $TABLE on port(s) $overlap; its TLS
+  is never decrypted there, so no path can be seen. Use another port for the redirect, or add the
+  'terminate' option to its line."
+      takeover="$overlap"
+      log "NOTE: on port(s) $takeover, $rhost now ends here instead of at $wild's target; paths without a redirect get 404"
     fi
-    [[ -n "$wild_opts" ]] && log "NOTE: $rhost now ends here instead of at $wild's target; paths without a redirect get 404"
-    if has_port "$ports" 443; then
-      printf '%s be_pt_terminate\n' "$rhost" >> "$tmp_map"
+    ronly="$(merge_ports "$(ports_minus "$ports" "$base_ports")" "$takeover")"
+    [[ -n "$ronly" ]] || continue    # decrypted already wherever it redirects
+
+    if [[ "$base" == "$rhost" ]]; then
+      # Its own line keeps its ports; the redirect-only ones are added beside it.
+      has_port "$ronly" 443 \
+        && awk -v h="$rhost" '$1 == h { $2 = "be_pt_terminate" } { print }' "$tmp_map" > "$tmp_map.new" \
+        && mv "$tmp_map.new" "$tmp_map"
     else
-      printf '%s be_reject\n' "$rhost" >> "$tmp_map"
+      # A name of its own, so it resolves to itself; on the ports it does not
+      # redirect on it carries on exactly as the wildcard over it would.
+      inherit="$(ports_minus "$base_ports" "$takeover")"
+      if has_port "$ronly" 443; then
+        printf '%s be_pt_terminate\n' "$rhost" >> "$tmp_map"
+      elif [[ -n "$inherit" ]] && has_port "$inherit" 443; then
+        printf '%s %s\n' "$rhost" "$base_route" >> "$tmp_map"
+      else
+        printf '%s be_reject\n' "$rhost" >> "$tmp_map"
+      fi
+      if [[ -n "$inherit" ]]; then
+        served+=("$rhost|$inherit|$base_route")
+        [[ "$base_route" == be_pt_terminate ]] && term_rules+=("$rhost|$inherit|$base_be")
+      fi
+      grep -qxF "$base" "$tmp_cf" && printf '%s\n' "$rhost" >> "$tmp_cf"
     fi
-    redirect_only+=("$rhost")
-    served+=("$rhost|$ports|be_pt_terminate")
+    served+=("$rhost|$ronly|be_pt_terminate")
+    r404+=("$rhost|$ronly")
     has_certificate "$rhost" || {
       log "WARNING: no certificate in $CERT_DIR covers $rhost."
       log "  HTTPS redirects are answered here, so HAProxy needs one: add $rhost to"
@@ -509,7 +546,7 @@ generate() {
   mapfile -t extra_ports < <(printf '%s\n' "${extra_ports[@]}" | sed '/^$/d' | sort -nu)
   for p in "${extra_ports[@]}"; do check_listen_port "$p"; done
 
-  if (( ${#terminated[@]} + ${#redirect_only[@]} )); then
+  if (( ${#term_rules[@]} + ${#r404[@]} )); then
     write_terminate_frontend >> "$tmp_cfg"
     cat "$tmp_term" >> "$tmp_cfg"
   fi
@@ -566,21 +603,24 @@ check_listen_port() {
   fi
 }
 
-# port_ok_rules <rule> <port...> emits, per port, one rule that marks the
-# transaction as allowed when its resolved entry is served on the port it
-# arrived on. Reads the caller's served array.
+# port_ok_rules <rule> <route-or-""> <port...> emits, per port, one rule that
+# marks the transaction as allowed when its resolved entry is served on the
+# port it arrived on, counting only entries with that route when one is given.
+# Reads the caller's served array.
 port_ok_rules() {
-  local rule="$1"; shift
-  local port item key ports keys
+  local rule="$1" only="$2"; shift 2
+  local port item key ports route keys
   for port in "$@"; do
     keys=""
     for item in "${served[@]}"; do
-      IFS='|' read -r key ports _ <<< "$item"
-      has_port "$ports" "$port" && keys+=" $key"
+      IFS='|' read -r key ports route <<< "$item"
+      [[ -z "$only" || "$route" == "$only" ]] || continue
+      has_port "$ports" "$port" && [[ " $keys " != *" $key "* ]] && keys+=" $key"
     done
     [[ -n "$keys" ]] && printf '    %s set-var(txn.port_ok) bool(1) if { var(txn.pt_key) -m str%s } { dst_port %s }\n' \
       "$rule" "$keys" "$port"
   done
+  return 0
 }
 
 # write_terminate_frontend emits the internal frontend that decrypts the
@@ -592,11 +632,12 @@ port_ok_rules() {
 # has a path. dst_port is the port the client connected to, carried in the
 # PROXY header from whichever listener accepted it.
 #
-# Reads the caller's terminated, redirect_only, served and tmp_rd.
+# Reads the caller's served, term_rules, r404 and tmp_rd.
 write_terminate_frontend() {
   local cf_ips="${CLOUDFLARE_IPS_FILE:-/etc/haproxy/cloudflare-ips.lst}"
   local all_ports item ports
   all_ports="$(for item in "${served[@]}"; do IFS='|' read -r _ ports _ <<< "$item"; printf '%s\n' ${ports//,/ }; done | sort -nu | tr '\n' ' ')"
+  local key backend
   cat <<EOF
 #-----------------------------------------------------------------------------
 # 'terminate' domains and redirect hosts: TLS is decrypted here, and for the
@@ -628,7 +669,7 @@ frontend pt_https_in
     # Likewise a Host that is not served on the port this arrived on.
 EOF
   # shellcheck disable=SC2086
-  port_ok_rules http-request $all_ports
+  port_ok_rules http-request be_pt_terminate $all_ports
   cat <<EOF
     http-request silent-drop unless { var(txn.port_ok) -m found }
 
@@ -648,15 +689,18 @@ EOF
     echo "    # HTTP redirects, from $REDIRECT_TABLE. Longest prefix first per host."
     redirect_rules tls < "$tmp_rd"
   fi
-  if (( ${#redirect_only[@]} )); then
-    echo "    # Hosts that exist here only for their redirects."
-    printf '    http-request return status 404 content-type text/plain string "Not found" if { var(txn.pt_key) -m str %s }\n' \
-      "${redirect_only[*]}"
+  if (( ${#r404[@]} )); then
+    echo "    # Decrypted only for their redirects on these ports."
+    for item in "${r404[@]}"; do
+      IFS='|' read -r key ports <<< "$item"
+      printf '    http-request return status 404 content-type text/plain string "Not found" if { var(txn.pt_key) -m str %s } { dst_port %s }\n' \
+        "$key" "${ports//,/ }"
+    done
   fi
-  local domain
-  for domain in "${terminated[@]}"; do
-    printf '    use_backend %s if { var(txn.pt_key) -m str %s }\n' \
-      "$(backend_name "$domain")" "$domain"
+  for item in "${term_rules[@]}"; do
+    IFS='|' read -r key ports backend <<< "$item"
+    printf '    use_backend %s if { var(txn.pt_key) -m str %s } { dst_port %s }\n' \
+      "$backend" "$key" "${ports//,/ }"
   done
   echo
 }
@@ -723,7 +767,7 @@ frontend pt_http_in
     acl cf_only_host    var(txn.pt_key) -m str -f $CF_ONLY_LIST
     http-request silent-drop if cf_only_host !from_cloudflare
 EOF
-  port_ok_rules http-request "${extra_ports[@]}"
+  port_ok_rules http-request "" "${extra_ports[@]}"
   echo "    http-request silent-drop unless { var(txn.port_ok) -m found }"
   echo
   redirect_rules httpx < "$tmp_rd"

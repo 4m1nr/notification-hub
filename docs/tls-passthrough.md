@@ -147,15 +147,26 @@ The table is `/etc/haproxy/redirects.conf` (not in git), one redirect per line:
    browsers get a certificate error before they ever see the redirect.
    Plain-HTTP redirects work without one.
 
-**How it combines with the passthrough table:**
+**How it combines with the passthrough table.** This is decided port by port.
+A redirect's ports are 443 unless it has `port=`, and so are a line's.
 
-| The source host is… | Result |
+| On a port where the source host is… | Result |
 |---|---|
 | in no table | it exists only for its redirects; other paths get **404** |
 | a `terminate` line, or under a `terminate` wildcard | redirected paths redirect, every other path still reaches its target |
-| a plain passthrough line | **rejected** — its TLS is never decrypted here, so no path can be seen; add `terminate` to that line first |
-| under a plain passthrough wildcard | becomes an exception to it: redirected paths redirect, other paths get 404 (`sync` says so) |
+| a plain passthrough line | **rejected** — its TLS is never decrypted on that port, so no path can be seen. Give the redirect another port, or add `terminate` to the line |
+| under a plain passthrough wildcard | becomes an exception to it there: redirected paths redirect, other paths get 404 (`sync` says so) |
 | one of the hub's own domains | **rejected** |
+
+On the ports a line or wildcard listens on but the redirect does not, nothing
+changes. So a plain passthrough host can keep its handshake untouched on 443
+and still have redirects on another port:
+
+```bash
+# servenet.example.com stays plain passthrough on 443; port 8000 decrypts it
+# for this redirect, and answers 404 for other paths.
+sudo /opt/notification-hub/bin/passthrough.sh redirect add servenet.example.com/sub https://other.example.net/sub port=8000
+```
 
 Sources are letters, digits and `. _ ~ - /`; wildcards are not supported as a
 redirect source. A destination under its own source (`x.example.com` →
@@ -191,10 +202,10 @@ wildcard. So an exception keeps its own ports too. With `*.example.com port=8443
 and `z.example.com` (default 443), `z.example.com` is served on 443 only and is
 dropped on 8443; it never falls back to the wildcard.
 
-A redirect's ports must be ones its host is decrypted on. A redirect on a
-`terminate` line, or under a `terminate` wildcard, may only use ports that line
-listens on, and `add` says so if not. Redirect-only hosts get whatever ports
-their redirects name.
+A redirect may use any port except one where its host is plain passthrough
+(see *How it combines with the passthrough table* above). On ports its host's
+line does not listen on, the host is decrypted only for the redirects there,
+and other paths get 404.
 
 **What you need to do for a new port:**
 
