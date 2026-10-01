@@ -30,6 +30,13 @@
 #                       domains do. HTTP(S)/WebSocket/gRPC only, and HAProxy
 #                       needs a certificate for the domain (domains.map).
 #
+# Wildcards: '*.example.com' routes every one-label name under example.com
+# (a.example.com, not a.b.example.com and not example.com itself) that has no
+# line of its own. A line for a specific name is an exception: it takes its
+# own target and its own options, whatever the wildcard says. The hub's own
+# domains are never captured by a wildcard. A '*' anywhere but the whole first
+# label is rejected.
+#
 # Connections whose TLS SNI matches the hostname are handed to the target with
 # the handshake untouched, so that service keeps terminating its own TLS. The
 # hub's own domains are unaffected; anything matching neither is silent-dropped.
@@ -46,3 +53,5 @@
 #mooz.example.com            127.0.0.1:440
 #node.example.com            127.0.0.1:442           proxy-protocol
 #cdn.example.com             127.0.0.1:443           terminate proxy-protocol cloudflare-only
+#*.apps.example.com          127.0.0.1:444           cloudflare-only
+#admin.apps.example.com      127.0.0.1:445

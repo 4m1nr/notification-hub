@@ -6,8 +6,9 @@ untouched, so that service keeps terminating its own TLS and never knows a proxy
 is in front of it.
 
 ```
-:443 ──▶ inspect SNI ──┬── in passthrough.conf ──▶ its target, handshake untouched
+:443 ──▶ inspect SNI ──┬── exact name in passthrough.conf ──▶ its target, handshake untouched
                        ├── one of the hub's 4 domains ──▶ TLS terminated here
+                       ├── matches a '*.x.y' in passthrough.conf ──▶ the wildcard's target
                        └── anything else, or no SNI ──▶ silent-drop
 ```
 
@@ -22,9 +23,9 @@ Two files are **generated** from that table and must not be edited directly:
 
 | File | Contents |
 |---|---|
-| `/etc/haproxy/sni-passthrough.map` | SNI hostname → backend name |
+| `/etc/haproxy/sni-passthrough.map` | SNI hostname or `*.x.y` wildcard → backend name |
 | `/etc/haproxy/conf.d/10-passthrough.cfg` | the backend definitions (and the decrypting frontend, if any domain uses `terminate`) |
-| `/etc/haproxy/cloudflare-only.passthrough.lst` | SNIs only Cloudflare may connect to |
+| `/etc/haproxy/cloudflare-only.passthrough.lst` | table entries (names or wildcards) only Cloudflare may connect to |
 
 `haproxy.cfg` itself contains only a generic map lookup, so **adding a domain
 never means editing a tracked file** — and a `git pull` can never clobber your
@@ -49,6 +50,48 @@ sudo /opt/notification-hub/bin/passthrough.sh remove app.example.com
 `list` flags any target with nothing listening behind it — otherwise that domain
 fails in a way that looks like a proxy fault rather than a missing service.
 
+## Wildcards and exceptions
+
+A line whose domain is `*.example.com` routes every name **one label** under
+`example.com` — `a.example.com`, `b.example.com` — to one target. A line for a
+specific name under it is an **exception**: that name goes to its own target,
+with its own options, whatever the wildcard says.
+
+```bash
+# Quote the wildcard, or the shell may expand the '*'.
+sudo /opt/notification-hub/bin/passthrough.sh add '*.example.com' 127.0.0.1:8443
+sudo /opt/notification-hub/bin/passthrough.sh add z.example.com  127.0.0.1:9443   # exception
+```
+
+| SNI | Goes to |
+|---|---|
+| `a.example.com`, `anything.example.com` | `*.example.com` → `127.0.0.1:8443` |
+| `z.example.com` | its own line → `127.0.0.1:9443` |
+| `example.com` | **not** matched — add it as its own line if you need it |
+| `a.b.example.com` | **not** matched — add `a.b.example.com` or `'*.b.example.com'` |
+| a hub domain under `example.com` (e.g. `ntfy.example.com`) | still the hub — wildcards never capture the hub's domains |
+
+The precedence is fixed, not order-dependent: an exact name always beats a
+wildcard, wherever the lines sit in the file. Because a wildcard covers exactly
+one label, no two wildcards can ever match the same name, so there is nothing
+else to rank.
+
+Options follow the line that matched. If `*.example.com` is `cloudflare-only`
+and `z.example.com` is not, direct connections to `z.example.com` are allowed
+and everything else under the wildcard still has to come through Cloudflare —
+and the reverse works too. With `terminate`, the `Host` header is resolved the
+same way after decryption.
+
+A `*` anywhere other than as the whole first label (`a.*.example.com`,
+`*foo.example.com`) is rejected by `add` and `sync`.
+
+**Certificates.** Plain passthrough still needs none here: each backend presents
+its own, so the service behind `*.example.com` should hold a wildcard
+certificate (or one per name it serves). A `terminate` wildcard needs a
+wildcard certificate *here* — `issue-cert.sh '*.example.com'` with
+`domains.map` format `combined` or `both`, service `haproxy`; see
+[certificates.md](certificates.md). `sync` warns if none covers it.
+
 ## Editing the table by hand
 
 ```bash
@@ -64,7 +107,8 @@ app.example.com              127.0.0.1:8443
 other.example.com            127.0.0.1:9000    proxy-protocol cloudflare-only
 ```
 
-Options, any number, space-separated: `proxy-protocol` / `proxy-protocol-v1`
+The domain may be a `*.x.y` wildcard (see above). Options, any number,
+space-separated: `proxy-protocol` / `proxy-protocol-v1`
 (below), `cloudflare-only` and `terminate` (both under *Behind Cloudflare*).
 
 `sync` is idempotent, and refuses to reload if the resulting configuration does

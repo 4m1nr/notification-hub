@@ -292,6 +292,10 @@ sudo /opt/notification-hub/bin/passthrough.sh add mooz.example.com     127.0.0.1
 sudo /opt/notification-hub/bin/passthrough.sh list
 ```
 
+A quoted `'*.example.com'` routes every one-label name under it, and a line for
+a specific name is an exception with its own target and options — see
+*Wildcards and exceptions* in [tls-passthrough.md](tls-passthrough.md).
+
 The table lives at `/etc/haproxy/passthrough.conf` and is **not** in the
 repository, so a `git pull` can never overwrite your routing. Each `add`
 validates the whole configuration and reloads — a reload, so existing sessions

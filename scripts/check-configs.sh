@@ -62,7 +62,10 @@ mkdir -p "$WORK/conf.d"
 { printf 'sample.example.com  127.0.0.1:9441\n'
   printf 'proxied.example.com 127.0.0.1:9442  proxy-protocol\n'
   printf 'edge.example.com    127.0.0.1:9443  cloudflare-only\n'
-  printf 'cdn.example.com     127.0.0.1:9444  terminate proxy-protocol cloudflare-only\n'; } > "$WORK/passthrough.conf"
+  printf 'cdn.example.com     127.0.0.1:9444  terminate proxy-protocol cloudflare-only\n'
+  printf '*.wild.example.com  127.0.0.1:9445  cloudflare-only\n'
+  printf 'own.wild.example.com 127.0.0.1:9446\n'
+  printf '*.term.example.com  127.0.0.1:9447  terminate\n'; } > "$WORK/passthrough.conf"
 # The generated conf.d names host paths; they are rewritten below to the
 # container's mount point, like the main config's.
 PASSTHROUGH_TABLE="$WORK/passthrough.conf" PASSTHROUGH_MAP="$WORK/sni-passthrough.map" \
@@ -119,6 +122,20 @@ if grep -qx 'cdn.example.com be_pt_terminate' "$WORK/sni-passthrough.map" \
   echo "    terminate and cloudflare-only options rendered correctly"
 else
   echo "    terminate / cloudflare-only options did not render correctly"; fail=1
+fi
+
+# A wildcard gets its own backend under a name no hostname can produce, its
+# exception keeps a separate one and is not Cloudflare-only, and a terminated
+# wildcard is routed by the resolved entry inside the decrypting frontend.
+if grep -qx '\*.wild.example.com be_pt___wild_example_com' "$WORK/sni-passthrough.map" \
+   && grep -qx 'own.wild.example.com be_pt_own_wild_example_com' "$WORK/sni-passthrough.map" \
+   && grep -qx '\*.wild.example.com' "$WORK/cloudflare-only.passthrough.lst" \
+   && ! grep -qx 'own.wild.example.com' "$WORK/cloudflare-only.passthrough.lst" \
+   && grep -qx '\*.term.example.com be_pt_terminate' "$WORK/sni-passthrough.map" \
+   && grep -qF 'use_backend be_pt___term_example_com if { var(txn.pt_key) -m str *.term.example.com }' "$WORK/conf.d/10-passthrough.cfg"; then
+  echo "    wildcard passthrough entries and their exceptions rendered correctly"
+else
+  echo "    wildcard passthrough entries did not render correctly"; fail=1
 fi
 
 echo "==> rsyslog"
