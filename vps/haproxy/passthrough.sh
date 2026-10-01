@@ -320,6 +320,9 @@ redirect_rules() {
     esac
     host_acl="{ hdr(host),field(1,:),lower -m str $host }"
     [[ -n "$rule_ports" ]] && host_acl+=" { dst_port ${rule_ports% } }"
+    # pt_https_in sends certificate validation to certbot; these rules run
+    # before its use_backend, so they must step aside for it.
+    [[ "$scope" == tls ]] && host_acl+=" !acme_challenge"
     if (( drop )); then
       location="$dest"
     elif [[ -z "$path" ]]; then
@@ -681,8 +684,10 @@ EOF
     http-request set-header X-Forwarded-Proto https
     http-request set-header X-Forwarded-For %[src]
 
+    # Certificate validation for these hosts always reaches certbot, whatever
+    # redirects or 404s they have. http-request rules run before any
+    # use_backend, so they skip this path themselves.
     acl acme_challenge path_beg /.well-known/acme-challenge/
-    use_backend be_acme if acme_challenge
 EOF
   if [[ -s "$tmp_rd" ]]; then
     echo
@@ -693,10 +698,11 @@ EOF
     echo "    # Decrypted only for their redirects on these ports."
     for item in "${r404[@]}"; do
       IFS='|' read -r key ports <<< "$item"
-      printf '    http-request return status 404 content-type text/plain string "Not found" if { var(txn.pt_key) -m str %s } { dst_port %s }\n' \
+      printf '    http-request return status 404 content-type text/plain string "Not found" if { var(txn.pt_key) -m str %s } { dst_port %s } !acme_challenge\n' \
         "$key" "${ports//,/ }"
     done
   fi
+  echo "    use_backend be_acme if acme_challenge"
   for item in "${term_rules[@]}"; do
     IFS='|' read -r key ports backend <<< "$item"
     printf '    use_backend %s if { var(txn.pt_key) -m str %s } { dst_port %s }\n' \
