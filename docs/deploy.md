@@ -296,6 +296,10 @@ A quoted `'*.example.com'` routes every one-label name under it, and a line for
 a specific name is an exception with its own target and options — see
 *Wildcards and exceptions* in [tls-passthrough.md](tls-passthrough.md).
 
+To redirect a host, or a path prefix on it, elsewhere (path and query kept):
+`passthrough.sh redirect add x.example.com/sub https://a.example.net/sub`. The
+source host needs a certificate here — see *HTTP redirects* in the same file.
+
 The table lives at `/etc/haproxy/passthrough.conf` and is **not** in the
 repository, so a `git pull` can never overwrite your routing. Each `add`
 validates the whole configuration and reloads — a reload, so existing sessions

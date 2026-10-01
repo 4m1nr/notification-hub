@@ -163,8 +163,13 @@ frontend http_in
     # lineage's renewal config by 70-certs.sh), and this forwards the challenge
     # to it, so :80 stays owned by HAProxy the whole time.
     acl acme_challenge path_beg /.well-known/acme-challenge/
-    http-request redirect scheme https code 301 unless acme_challenge
+    # Hosts in the redirect table (passthrough.sh redirect) go straight to
+    # their destination rather than to HTTPS on the same host first. The
+    # backend is generated into conf.d and upgrades unmatched paths itself.
+    acl redirect_host hdr(host),field(1,:),lower -m str -f /etc/haproxy/redirect-hosts.lst
+    http-request redirect scheme https code 301 unless acme_challenge || redirect_host
     use_backend be_acme if acme_challenge
+    use_backend be_http_redirects if redirect_host
 
 backend be_acme
     server acme 127.0.0.1:${ACME_HTTP_PORT}

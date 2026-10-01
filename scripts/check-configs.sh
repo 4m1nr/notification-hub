@@ -66,17 +66,25 @@ mkdir -p "$WORK/conf.d"
   printf '*.wild.example.com  127.0.0.1:9445  cloudflare-only\n'
   printf 'own.wild.example.com 127.0.0.1:9446\n'
   printf '*.term.example.com  127.0.0.1:9447  terminate\n'; } > "$WORK/passthrough.conf"
+# Redirects: a redirect-only host, a whole-host one, and one on a terminated
+# wildcard, which must not add an entry of its own.
+{ printf 'go.example.com/sub      https://a.example.net/sub\n'
+  printf 'go.example.com/sub/x    https://b.example.net/     301\n'
+  printf 'old.example.com         https://new.example.net    308\n'
+  printf 'app.term.example.com/dl https://dl.example.net     drop-path\n'; } > "$WORK/redirects.conf"
 # The generated conf.d names host paths; they are rewritten below to the
 # container's mount point, like the main config's.
 PASSTHROUGH_TABLE="$WORK/passthrough.conf" PASSTHROUGH_MAP="$WORK/sni-passthrough.map" \
 HAPROXY_CONF_D="$WORK/conf.d" HAPROXY_MAIN_CFG=/nonexistent \
 CLOUDFLARE_ONLY_PASSTHROUGH_LIST="$WORK/cloudflare-only.passthrough.lst" \
-HAPROXY_CERT_DIR="$WORK/certs" \
+HAPROXY_CERT_DIR="$WORK/certs" REDIRECT_TABLE="$WORK/redirects.conf" \
+REDIRECT_HOSTS_LIST="$WORK/redirect-hosts.lst" HUB_ENV=/nonexistent \
   ./vps/haproxy/passthrough.sh sync >/dev/null
 sed -i "s|$WORK/|/cfg/|g; s|/etc/haproxy/cloudflare-ips.lst|/cfg/cloudflare-ips.lst|g" "$WORK/conf.d/10-passthrough.cfg"
 printf 'rss.example.com\n' > "$WORK/cloudflare-only.hub.lst"
 sed -i "s|/etc/haproxy/cloudflare-only\.|/cfg/cloudflare-only.|g" "$WORK/haproxy.cfg"
-chmod -R a+rX "$WORK/conf.d" "$WORK/sni-passthrough.map" "$WORK"/cloudflare-only.*
+sed -i "s|/etc/haproxy/redirect-hosts.lst|/cfg/redirect-hosts.lst|g" "$WORK/haproxy.cfg"
+chmod -R a+rX "$WORK/conf.d" "$WORK/sni-passthrough.map" "$WORK"/cloudflare-only.* "$WORK/redirect-hosts.lst"
 # Rewrite absolute paths to the container's mount point. Mounting at a fixed
 # path rather than mirroring the host path matters: some docker setups give the
 # daemon a private /tmp, and a same-path mount under /tmp is then invisible
@@ -136,6 +144,24 @@ if grep -qx '\*.wild.example.com be_pt___wild_example_com' "$WORK/sni-passthroug
   echo "    wildcard passthrough entries and their exceptions rendered correctly"
 else
   echo "    wildcard passthrough entries did not render correctly"; fail=1
+fi
+
+# Redirect hosts reach the decrypting frontend unless a terminated wildcard
+# already covers them; the longer prefix is tried first; port 80 has them all.
+cfg="$WORK/conf.d/10-passthrough.cfg"
+if grep -qx 'go.example.com be_pt_terminate' "$WORK/sni-passthrough.map" \
+   && grep -qx 'old.example.com be_pt_terminate' "$WORK/sni-passthrough.map" \
+   && ! grep -q '^app.term.example.com ' "$WORK/sni-passthrough.map" \
+   && grep -qx 'go.example.com' "$WORK/redirect-hosts.lst" \
+   && grep -qx 'app.term.example.com' "$WORK/redirect-hosts.lst" \
+   && grep -qF 'http-request redirect location "https://new.example.net%[pathq]" code 308' "$cfg" \
+   && grep -qF 'http-request redirect location "https://dl.example.net" code 302' "$cfg" \
+   && [[ "$(grep -n 'location "https://b.example.net%\[pathq,regsub(^/sub/x,)\]" code 301' "$cfg" | head -1 | cut -d: -f1)" \
+         -lt "$(grep -n 'location "https://a.example.net/sub%\[pathq,regsub(^/sub,)\]" code 302' "$cfg" | head -1 | cut -d: -f1)" ]] \
+   && grep -q '^backend be_http_redirects' "$cfg"; then
+  echo "    HTTP redirects rendered correctly"
+else
+  echo "    HTTP redirects did not render correctly"; fail=1
 fi
 
 echo "==> rsyslog"

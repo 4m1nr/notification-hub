@@ -7,6 +7,7 @@ is in front of it.
 
 ```
 :443 ──▶ inspect SNI ──┬── exact name in passthrough.conf ──▶ its target, handshake untouched
+                       │     (or decrypted here, for 'terminate' and redirect hosts)
                        ├── one of the hub's 4 domains ──▶ TLS terminated here
                        ├── matches a '*.x.y' in passthrough.conf ──▶ the wildcard's target
                        └── anything else, or no SNI ──▶ silent-drop
@@ -26,6 +27,7 @@ Two files are **generated** from that table and must not be edited directly:
 | `/etc/haproxy/sni-passthrough.map` | SNI hostname or `*.x.y` wildcard → backend name |
 | `/etc/haproxy/conf.d/10-passthrough.cfg` | the backend definitions (and the decrypting frontend, if any domain uses `terminate`) |
 | `/etc/haproxy/cloudflare-only.passthrough.lst` | table entries (names or wildcards) only Cloudflare may connect to |
+| `/etc/haproxy/redirect-hosts.lst` | hosts in the redirect table (`/etc/haproxy/redirects.conf`), for port 80 |
 
 `haproxy.cfg` itself contains only a generic map lookup, so **adding a domain
 never means editing a tracked file** — and a `git pull` can never clobber your
@@ -91,6 +93,72 @@ certificate (or one per name it serves). A `terminate` wildcard needs a
 wildcard certificate *here* — `issue-cert.sh '*.example.com'` with
 `domains.map` format `combined` or `both`, service `haproxy`; see
 [certificates.md](certificates.md). `sync` warns if none covers it.
+
+## HTTP redirects
+
+Send a whole host, or everything under a path on it, somewhere else. The rest
+of the path and the query string are kept:
+
+```bash
+sudo /opt/notification-hub/bin/passthrough.sh redirect add x.example.com/sub https://a.example.net/sub
+```
+
+| Request | Redirected to |
+|---|---|
+| `https://x.example.com/sub/page?id=7` | `https://a.example.net/sub/page?id=7` |
+| `https://x.example.com/sub` | `https://a.example.net/sub` |
+| `https://x.example.com/subway` | not matched (`/sub` matches whole path segments only) |
+| `http://x.example.com/sub/page` | straight to `https://a.example.net/sub/page` — no detour through HTTPS on `x.example.com` |
+
+The destination path can differ (`x.example.com/old https://a.example.net/new`
+sends `/old/p` to `/new/p`). Leave the path off to redirect a whole host
+(`old.example.com https://new.example.com`). When prefixes on one host
+overlap, the longest wins, wherever the lines sit in the table.
+
+Options, after the destination:
+
+| Option | Effect |
+|---|---|
+| `301` `302` `303` `307` `308` | status code; default **302** (temporary). Browsers cache 301/308 indefinitely, so only use them once the target is final. 307/308 keep the method and body of a POST. |
+| `drop-path` | always send to the destination exactly, ignoring the rest of the path and the query |
+
+```bash
+sudo /opt/notification-hub/bin/passthrough.sh redirect add old.example.com https://new.example.com 308
+sudo /opt/notification-hub/bin/passthrough.sh redirect add x.example.com/promo https://shop.example.net/landing drop-path
+sudo /opt/notification-hub/bin/passthrough.sh redirect list
+sudo /opt/notification-hub/bin/passthrough.sh redirect remove x.example.com/sub
+```
+
+The table is `/etc/haproxy/redirects.conf` (not in git), one redirect per line:
+`source  destination  [options]`. After editing it by hand, run
+`passthrough.sh sync`.
+
+**What you need to do for a redirect host:**
+
+1. **DNS** for the source host must point at this VPS (or be proxied through
+   Cloudflare to it).
+2. **A certificate here.** A path is only visible after TLS is decrypted, so
+   HAProxy answers the HTTPS request itself. Add the host to `domains.map`
+   (format `combined`, service `haproxy`) and run `issue-cert.sh <host>`, or
+   cover it with a wildcard. `sync` warns while none covers it; until then
+   browsers get a certificate error before they ever see the redirect.
+   Plain-HTTP redirects work without one.
+
+**How it combines with the passthrough table:**
+
+| The source host is… | Result |
+|---|---|
+| in no table | it exists only for its redirects; other paths get **404** |
+| a `terminate` line, or under a `terminate` wildcard | redirected paths redirect, every other path still reaches its target |
+| a plain passthrough line | **rejected** — its TLS is never decrypted here, so no path can be seen; add `terminate` to that line first |
+| under a plain passthrough wildcard | becomes an exception to it: redirected paths redirect, other paths get 404 (`sync` says so) |
+| one of the hub's own domains | **rejected** |
+
+Sources are letters, digits and `. _ ~ - /`; wildcards are not supported as a
+redirect source. A destination under its own source (`x.example.com` →
+`https://x.example.com/new`) is rejected, since it would redirect forever.
+`add` checks all of this before it touches the running proxy, and puts the
+table back as it was if anything is rejected.
 
 ## Editing the table by hand
 

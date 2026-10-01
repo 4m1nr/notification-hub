@@ -9,8 +9,11 @@
 #   /etc/haproxy/sni-passthrough.map              SNI hostname -> backend name
 #   /etc/haproxy/conf.d/10-passthrough.cfg        the backend definitions
 #   /etc/haproxy/cloudflare-only.passthrough.lst  SNIs only Cloudflare may reach
+#   /etc/haproxy/redirect-hosts.lst               hosts with HTTP redirects
 #
-# All are generated; edit passthrough.conf, never them.
+# It also reads /etc/haproxy/redirects.conf, the HTTP redirect table
+# ('redirect' commands below). All are generated; edit the two tables, never
+# the generated files.
 set -euo pipefail
 
 TABLE="${PASSTHROUGH_TABLE:-/etc/haproxy/passthrough.conf}"
@@ -20,6 +23,12 @@ GENERATED="$CONF_D/10-passthrough.cfg"
 MAIN_CFG="${HAPROXY_MAIN_CFG:-/etc/haproxy/haproxy.cfg}"
 CF_ONLY_LIST="${CLOUDFLARE_ONLY_PASSTHROUGH_LIST:-/etc/haproxy/cloudflare-only.passthrough.lst}"
 CERT_DIR="${HAPROXY_CERT_DIR:-/etc/certs/proxy/combined}"
+REDIRECT_TABLE="${REDIRECT_TABLE:-/etc/haproxy/redirects.conf}"
+REDIRECT_HOSTS_LIST="${REDIRECT_HOSTS_LIST:-/etc/haproxy/redirect-hosts.lst}"
+HUB_ENV="${HUB_ENV:-/etc/notification-hub/hub.env}"
+
+# Redirect status codes the redirect table accepts; 302 when none is given.
+VALID_REDIRECT_CODES="301 302 303 307 308"
 
 # Every option the table accepts, in the third and later columns.
 VALID_OPTIONS="proxy-protocol proxy-protocol-v1 cloudflare-only terminate"
@@ -57,7 +66,18 @@ usage: $0 <command> [args]
                                                   needs a certificate here
   remove <domain>            Remove a domain and apply
   sync                       Regenerate, validate and reload after editing
-                             $TABLE by hand
+                             $TABLE or $REDIRECT_TABLE by hand
+
+  redirect list              Show the HTTP redirects
+  redirect add <host[/path]> <http(s)://dest[/path]> [code] [drop-path]
+                             Redirect a host, or every path under a prefix of
+                             it, keeping the rest of the path and the query:
+                               x.y/sub -> https://a.b.c/sub sends
+                               x.y/sub/p?q=1 to https://a.b.c/sub/p?q=1
+                             code: 301 302 303 307 308 (default 302)
+                             drop-path: always send to the destination as is
+  redirect remove <host[/path]>
+                             Remove a redirect and apply
 
 Adding a domain by hand is just a line in $TABLE followed by '$0 sync'.
 EOF
@@ -135,6 +155,107 @@ read_table() {
   done < "$TABLE"
 }
 
+# Redirect fields travel '|'-separated, never tab-separated: read collapses
+# consecutive tabs, so an empty path (a whole-host redirect) would shift every
+# field after it. Validation keeps '|' out of all of them.
+#
+# split_source prints "host|path" for a redirect source: the host
+# lowercased, the path with trailing slashes removed ("" for the whole host).
+split_source() {
+  local src="$1" host path=""
+  host="${src%%/*}"
+  [[ "$src" == */* ]] && path="/${src#*/}"
+  while [[ "$path" == */ ]]; do path="${path%/}"; done
+  printf '%s|%s\n' "${host,,}" "$path"
+}
+
+# check_redirect validates one redirect and dies with its location on error.
+# Paths are limited to unreserved URL characters, which is also what keeps
+# them safe to place in the generated regex and in HAProxy's quoted strings.
+check_redirect() {
+  local where="$1" source="$2" dest="$3"; shift 3
+  local host path opt code=""
+  [[ "$source" =~ ^[A-Za-z0-9._-]+(/[A-Za-z0-9._~/-]*)?$ ]] \
+    || die "$where: source '$source' must be host or host/path (letters, digits, . _ ~ - /)"
+  IFS='|' read -r host path < <(split_source "$source")
+  valid_domain "$host" && [[ "$host" != \** ]] \
+    || die "$where: '$host' is not a hostname (redirect sources cannot be wildcards)"
+  [[ "$dest" =~ ^https?://[A-Za-z0-9.-]+(:[0-9]+)?(/[A-Za-z0-9._~/-]*)?$ ]] \
+    || die "$where: destination '$dest' must be http(s)://host[:port][/path] (letters, digits, . _ ~ - /)"
+  for opt in "$@"; do
+    if [[ " $VALID_REDIRECT_CODES " == *" $opt "* ]]; then
+      [[ -z "$code" ]] || die "$where: more than one status code"
+      code="$opt"
+    elif [[ "$opt" != drop-path ]]; then
+      die "$where: unknown redirect option '$opt' — valid: ${VALID_REDIRECT_CODES// /, }, drop-path"
+    fi
+  done
+
+  # A destination under its own source redirects to itself forever.
+  local rest="${dest#*://}" dhost dpath=""
+  dhost="${rest%%/*}"; dhost="${dhost%%:*}"
+  [[ "$rest" == */* ]] && dpath="/${rest#*/}"
+  if [[ "${dhost,,}" == "$host" ]] \
+     && { [[ -z "$path" ]] || [[ "$dpath" == "$path" || "$dpath" == "$path"/* ]]; }; then
+    die "$where: $dest is under $source itself, which would redirect forever"
+  fi
+}
+
+# read_redirects emits "host|path|dest|code|drop" for each
+# active line, longest path first within a host so the most specific prefix
+# wins whatever the order of the file.
+read_redirects() {
+  [[ -f "$REDIRECT_TABLE" ]] || return 0
+  local source dest options host path opt code drop
+  while read -r source dest options; do
+    [[ -z "${source:-}" || "${source:0:1}" == "#" ]] && continue
+    [[ -n "${dest:-}" ]] || die "line for '$source' in $REDIRECT_TABLE has no destination"
+    # shellcheck disable=SC2086
+    check_redirect "'$source' in $REDIRECT_TABLE" "$source" "$dest" ${options:-}
+    IFS='|' read -r host path < <(split_source "$source")
+    code=302 drop=0
+    for opt in ${options:-}; do
+      case "$opt" in drop-path) drop=1 ;; *) code="$opt" ;; esac
+    done
+    printf '%s|%s|%s|%s|%s|%s\n' "${#path}" "$host" "$path" "$dest" "$code" "$drop"
+  done < "$REDIRECT_TABLE" | sort -t'|' -k2,2 -k1,1nr | cut -d'|' -f2-
+}
+
+# hub_domains prints the hub's own domains, which a redirect may not take over:
+# they are TLS-terminated by the main frontend, never by pt_https_in.
+hub_domains() {
+  [[ -r "$HUB_ENV" ]] || return 0
+  (
+    set +u
+    # shellcheck disable=SC1090
+    source "$HUB_ENV" >/dev/null 2>&1
+    printf '%s\n' "${NTFY_DOMAIN:-}" "${MINIFLUX_DOMAIN:-}" "${CD_DOMAIN:-}" "${HC_DOMAIN:-}"
+  ) | tr '[:upper:]' '[:lower:]' | grep -v '^$' || true
+}
+
+# redirect_rules emits the http-request rules for every redirect, at the given
+# indent. Used in the decrypting frontend and in the port-80 backend alike.
+redirect_rules() {
+  local host path dest code drop host_acl location
+  while IFS='|' read -r host path dest code drop; do
+    host_acl="{ hdr(host),field(1,:),lower -m str $host }"
+    if (( drop )); then
+      location="$dest"
+    elif [[ -z "$path" ]]; then
+      location="${dest%/}%[pathq]"
+    else
+      # Strip the matched prefix and append what follows, query included.
+      location="${dest%/}%[pathq,regsub(^${path//./[.]},)]"
+    fi
+    if [[ -z "$path" ]]; then
+      printf '    http-request redirect location "%s" code %s if %s\n' "$location" "$code" "$host_acl"
+    else
+      printf '    http-request redirect location "%s" code %s if %s { path -m str %s } || %s { path_beg %s/ }\n' \
+        "$location" "$code" "$host_acl" "$path" "$host_acl" "$path"
+    fi
+  done
+}
+
 cmd_list() {
   [[ -f "$TABLE" ]] || { log "no routing table at $TABLE — nothing configured"; return 0; }
   local any=0
@@ -158,12 +279,15 @@ generate() {
   # subshell — and an invalid line would then regenerate an empty map, dropping
   # every route instead of refusing to change anything.
   read_table >/dev/null
+  read_redirects >/dev/null
 
   install -d -m 0755 "$CONF_D"
 
-  local tmp_map tmp_cfg tmp_cf tmp_term count=0
-  local terminated=()
+  local tmp_map tmp_cfg tmp_cf tmp_term tmp_rd count=0
+  local terminated=() redirect_only=()
   tmp_map="$(mktemp)"; tmp_cfg="$(mktemp)"; tmp_cf="$(mktemp)"; tmp_term="$(mktemp)"
+  tmp_rd="$(mktemp)"
+  read_redirects > "$tmp_rd"
 
   {
     echo "# Generated by passthrough.sh from $TABLE — do not edit."
@@ -233,16 +357,74 @@ generate() {
     count=$((count + 1))
   done < <(read_table)
 
-  if (( ${#terminated[@]} )); then
-    write_terminate_frontend "${terminated[@]}" >> "$tmp_cfg"
+  # --- HTTP redirects ---
+  # A path is only visible once TLS is decrypted, so every redirect host must
+  # reach pt_https_in: through its own 'terminate' line or a 'terminate'
+  # wildcard over it, or else through an entry added here for it alone.
+  local hubs rhost wild wild_opts exact_opts n_redirects
+  hubs="$(hub_domains)"
+  n_redirects="$(grep -c . "$tmp_rd" || true)"
+  {
+    echo "# Generated by passthrough.sh from $REDIRECT_TABLE — do not edit."
+    echo "# Hosts with HTTP redirects; port 80 sends them to be_http_redirects."
+    cut -d'|' -f1 "$tmp_rd" | sort -u
+  } > "$tmp_rd.hosts"
+
+  while read -r rhost; do
+    [[ -n "$rhost" ]] || continue
+    grep -qxF "$rhost" <<< "$hubs" \
+      && die "redirect source $rhost is one of the hub's own domains; redirects cannot take those over"
+    exact_opts="$(read_table | awk -F'\t' -v d="$rhost" '$1 == d {print $3 "|"}')"
+    wild="*.${rhost#*.}"
+    wild_opts="$(read_table | awk -F'\t' -v d="$wild" '$1 == d {print $3 "|"}')"
+    if [[ -n "$exact_opts" ]]; then
+      # shellcheck disable=SC2086
+      has_option terminate ${exact_opts%|} \
+        || die "redirect source $rhost is a plain passthrough domain in $TABLE; its TLS is never
+  decrypted here, so no path can be seen. Add the 'terminate' option to its line, or remove the line."
+      continue
+    fi
+    # shellcheck disable=SC2086
+    if [[ -n "$wild_opts" ]] && has_option terminate ${wild_opts%|}; then
+      continue    # decrypted already; other paths keep going to the wildcard's target
+    fi
+    [[ -n "$wild_opts" ]] && log "NOTE: $rhost now ends here instead of at $wild's target; paths without a redirect get 404"
+    printf '%s %s\n' "$rhost" be_pt_terminate >> "$tmp_map"
+    redirect_only+=("$rhost")
+    has_certificate "$rhost" || {
+      log "WARNING: no certificate in $CERT_DIR covers $rhost."
+      log "  HTTPS redirects are answered here, so HAProxy needs one: add $rhost to"
+      log "  /etc/notification-hub/domains.map (format combined, service haproxy),"
+      log "  then: sudo /opt/notification-hub/bin/issue-cert.sh $rhost"
+    }
+  done < <(sed '/^#/d' "$tmp_rd.hosts")
+
+  if (( ${#terminated[@]} + ${#redirect_only[@]} )); then
+    write_terminate_frontend "$tmp_rd" "${#terminated[@]}" "${terminated[@]}" "${redirect_only[@]}" >> "$tmp_cfg"
     cat "$tmp_term" >> "$tmp_cfg"
   fi
+
+  # Port 80 hands every redirect host to this backend, so a plain-HTTP request
+  # goes straight to its destination instead of first being sent to HTTPS on
+  # the same host. Paths without a redirect still get that HTTPS upgrade. It is
+  # always generated: haproxy.cfg refers to it even when the table is empty.
+  {
+    echo "#-----------------------------------------------------------------------------"
+    echo "# HTTP redirects on port 80, from $REDIRECT_TABLE."
+    echo "#-----------------------------------------------------------------------------"
+    echo "backend be_http_redirects"
+    echo "    mode http"
+    redirect_rules < "$tmp_rd"
+    echo "    http-request redirect scheme https code 301"
+    echo
+  } >> "$tmp_cfg"
 
   install -m 0644 "$tmp_map" "$MAP"
   install -m 0644 "$tmp_cfg" "$GENERATED"
   install -m 0644 "$tmp_cf" "$CF_ONLY_LIST"
-  rm -f "$tmp_map" "$tmp_cfg" "$tmp_cf" "$tmp_term"
-  log "generated $count passthrough backend(s)${terminated[*]:+, ${#terminated[@]} terminated here}"
+  install -m 0644 "$tmp_rd.hosts" "$REDIRECT_HOSTS_LIST"
+  rm -f "$tmp_map" "$tmp_cfg" "$tmp_cf" "$tmp_term" "$tmp_rd" "$tmp_rd.hosts"
+  log "generated $count passthrough backend(s)${terminated[*]:+, ${#terminated[@]} terminated here}, $n_redirects redirect(s)"
 }
 
 # write_terminate_frontend emits the internal frontend that decrypts the
@@ -250,8 +432,14 @@ generate() {
 # Cloudflare it only ever knows the edge's address; decrypting exposes
 # CF-Connecting-IP, and after set-src the PROXY header sent to the target
 # carries the real client — the same treatment the hub's own domains get.
+# Redirects are answered here too, for the same reason: only decrypted traffic
+# has a path.
+#
+#   write_terminate_frontend <redirects-file> <n-terminated> <terminated...> <redirect-only...>
 write_terminate_frontend() {
   local cf_ips="${CLOUDFLARE_IPS_FILE:-/etc/haproxy/cloudflare-ips.lst}"
+  local redirects="$1" n_term="$2"; shift 2
+  local terminated=("${@:1:n_term}") redirect_only=("${@:n_term+1}")
   cat <<EOF
 #-----------------------------------------------------------------------------
 # 'terminate' domains: TLS is decrypted here and re-encrypted to the target.
@@ -292,8 +480,18 @@ frontend pt_https_in
     http-request deny deny_status 421 unless known_host
     use_backend be_acme if acme_challenge
 EOF
+  if [[ -s "$redirects" ]]; then
+    echo
+    echo "    # HTTP redirects, from $REDIRECT_TABLE. Longest prefix first per host."
+    redirect_rules < "$redirects"
+  fi
+  if (( ${#redirect_only[@]} )); then
+    echo "    # Hosts that exist here only for their redirects."
+    printf '    http-request return status 404 content-type text/plain string "Not found" if { var(txn.pt_key) -m str %s }\n' \
+      "${redirect_only[*]}"
+  fi
   local domain
-  for domain in "$@"; do
+  for domain in "${terminated[@]}"; do
     printf '    use_backend %s if { var(txn.pt_key) -m str %s }\n' \
       "$(backend_name "$domain")" "$domain"
   done
@@ -321,6 +519,21 @@ validate_and_reload() {
 
 cmd_sync() { generate; validate_and_reload; }
 
+# sync_or_restore applies a table that was just edited, and puts the table back
+# as it was if that fails, so a rejected line never stays behind to block every
+# later sync.
+sync_or_restore() {
+  local table="$1" backup="$2"
+  if ( cmd_sync ); then
+    rm -f "$backup"
+    return 0
+  fi
+  install -m 0640 "$backup" "$table"
+  rm -f "$backup"
+  ( generate ) >/dev/null 2>&1 || true
+  die "change rejected; $table is back as it was"
+}
+
 cmd_add() {
   local domain="${1:-}" target="${2:-}"
   [[ -n "$domain" && -n "$target" ]] || die "usage: $0 add <domain> <host:port> [option...]"
@@ -334,6 +547,7 @@ cmd_add() {
   if read_table | cut -f1 | grep -qxF "$domain"; then
     die "'$domain' is already in $TABLE — remove it first, or edit the file"
   fi
+  local backup; backup="$(mktemp)"; cp -p "$TABLE" "$backup"
   printf '%-28s %-22s %s\n' "$domain" "$target" "$*" >> "$TABLE"
   log "added $domain -> $target${*:+ ($*)}"
   if has_option proxy-protocol "$@" || has_option proxy-protocol-v1 "$@"; then
@@ -347,7 +561,7 @@ cmd_add() {
     log "Only Cloudflare's edge may now connect to $domain; everyone else is"
     log "silently dropped. Its DNS record must be proxied (orange cloud)."
   fi
-  cmd_sync
+  sync_or_restore "$TABLE" "$backup"
 }
 
 cmd_remove() {
@@ -365,8 +579,70 @@ cmd_remove() {
   cmd_sync
 }
 
+ensure_redirect_table() {
+  if [[ ! -f "$REDIRECT_TABLE" ]]; then
+    install -m 0640 /dev/null "$REDIRECT_TABLE"
+    printf '# source (host[/path])        destination                   options\n' > "$REDIRECT_TABLE"
+    log "created an empty $REDIRECT_TABLE"
+  fi
+}
+
+cmd_redirect() {
+  local sub="${1:-}"; shift || true
+  case "$sub" in
+    list)
+      [[ -s "$REDIRECT_TABLE" ]] || { log "no redirects configured"; return 0; }
+      printf '%-36s %-40s %s\n' SOURCE DESTINATION OPTIONS >&2
+      local host path dest code drop
+      while IFS='|' read -r host path dest code drop; do
+        (( drop )) && code+=" drop-path"
+        printf '%-36s %-40s %s\n' "$host$path" "$dest" "$code" >&2
+      done < <(read_redirects)
+      ;;
+    add)
+      local source="${1:-}" dest="${2:-}"
+      [[ -n "$source" && -n "$dest" ]] || die "usage: $0 redirect add <host[/path]> <http(s)://dest[/path]> [code] [drop-path]"
+      shift 2
+      check_redirect "'$source'" "$source" "$dest" "$@"
+      ensure_redirect_table
+      local key; key="$(split_source "$source" | tr -d '|')"
+      if read_redirects | awk -F'|' '{print $1 $2}' | grep -qxF "$key"; then
+        die "$key already redirects — remove it first, or edit $REDIRECT_TABLE"
+      fi
+      local backup; backup="$(mktemp)"; cp -p "$REDIRECT_TABLE" "$backup"
+      printf '%-30s %-40s %s\n' "$key" "$dest" "$*" >> "$REDIRECT_TABLE"
+      log "added redirect $key -> $dest${*:+ ($*)}"
+      sync_or_restore "$REDIRECT_TABLE" "$backup"
+      ;;
+    remove)
+      local source="${1:-}"
+      [[ -n "$source" ]] || die "usage: $0 redirect remove <host[/path]>"
+      local key; key="$(split_source "$source" | tr -d '|')"
+      read_redirects | awk -F'|' '{print $1 $2}' | grep -qxF "$key" || die "no redirect for $key"
+      local tmp line src
+      tmp="$(mktemp)"
+      while IFS= read -r line; do
+        src="$(awk '{print $1}' <<< "$line")"
+        if [[ -n "$src" && "${src:0:1}" != "#" && "$(split_source "$src" | tr -d '|')" == "$key" ]]; then
+          continue
+        fi
+        printf '%s\n' "$line" >> "$tmp"
+      done < "$REDIRECT_TABLE"
+      install -m 0640 "$tmp" "$REDIRECT_TABLE"
+      rm -f "$tmp"
+      log "removed redirect $key"
+      cmd_sync
+      ;;
+    *) usage ;;
+  esac
+}
+
 case "${1:-}" in
   list)   shift; cmd_list "$@" ;;
+  redirect)
+    shift
+    [[ "${1:-}" == list ]] || require_writable redirect "$@"
+    cmd_redirect "$@" ;;
   add)    shift; require_writable add "$@";    cmd_add "$@" ;;
   remove) shift; require_writable remove "$@"; cmd_remove "$@" ;;
   sync)   shift; require_writable sync;        cmd_sync "$@" ;;

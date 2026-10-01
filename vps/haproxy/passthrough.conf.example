@@ -41,6 +41,10 @@
 # the handshake untouched, so that service keeps terminating its own TLS. The
 # hub's own domains are unaffected; anything matching neither is silent-dropped.
 #
+# HTTP redirects (host or host/path -> URL) live in their own table,
+# /etc/haproxy/redirects.conf, managed with `passthrough.sh redirect add|remove|list`.
+# See docs/tls-passthrough.md, "HTTP redirects".
+#
 # After editing, apply with:
 #
 #   sudo /opt/notification-hub/bin/passthrough.sh sync
