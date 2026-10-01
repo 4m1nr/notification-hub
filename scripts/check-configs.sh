@@ -62,18 +62,32 @@ mkdir -p "$WORK/conf.d"
 { printf 'sample.example.com  127.0.0.1:9441\n'
   printf 'proxied.example.com 127.0.0.1:9442  proxy-protocol\n'
   printf 'edge.example.com    127.0.0.1:9443  cloudflare-only\n'
-  printf 'cdn.example.com     127.0.0.1:9444  terminate proxy-protocol cloudflare-only\n'; } > "$WORK/passthrough.conf"
+  printf 'cdn.example.com     127.0.0.1:9444  terminate proxy-protocol cloudflare-only\n'
+  printf '*.wild.example.com  127.0.0.1:9445  cloudflare-only\n'
+  printf 'own.wild.example.com 127.0.0.1:9446\n'
+  printf '*.term.example.com  127.0.0.1:9447  terminate\n'
+  printf 'alt.example.com     127.0.0.1:9448  port=8443\n'
+  printf 'dual.example.com    127.0.0.1:9449  terminate port=443,8443\n'; } > "$WORK/passthrough.conf"
+# Redirects: a redirect-only host, a whole-host one, and one on a terminated
+# wildcard, which must not add an entry of its own.
+{ printf 'go.example.com/sub      https://a.example.net/sub\n'
+  printf 'go.example.com/sub/x    https://b.example.net/     301\n'
+  printf 'old.example.com         https://new.example.net    308\n'
+  printf 'app.term.example.com/dl https://dl.example.net     drop-path\n'
+  printf 'side.example.com/s      https://s.example.net/s    port=9443\n'; } > "$WORK/redirects.conf"
 # The generated conf.d names host paths; they are rewritten below to the
 # container's mount point, like the main config's.
 PASSTHROUGH_TABLE="$WORK/passthrough.conf" PASSTHROUGH_MAP="$WORK/sni-passthrough.map" \
 HAPROXY_CONF_D="$WORK/conf.d" HAPROXY_MAIN_CFG=/nonexistent \
 CLOUDFLARE_ONLY_PASSTHROUGH_LIST="$WORK/cloudflare-only.passthrough.lst" \
-HAPROXY_CERT_DIR="$WORK/certs" \
+HAPROXY_CERT_DIR="$WORK/certs" REDIRECT_TABLE="$WORK/redirects.conf" \
+REDIRECT_HOSTS_LIST="$WORK/redirect-hosts.lst" HUB_ENV=/nonexistent \
   ./vps/haproxy/passthrough.sh sync >/dev/null
 sed -i "s|$WORK/|/cfg/|g; s|/etc/haproxy/cloudflare-ips.lst|/cfg/cloudflare-ips.lst|g" "$WORK/conf.d/10-passthrough.cfg"
 printf 'rss.example.com\n' > "$WORK/cloudflare-only.hub.lst"
 sed -i "s|/etc/haproxy/cloudflare-only\.|/cfg/cloudflare-only.|g" "$WORK/haproxy.cfg"
-chmod -R a+rX "$WORK/conf.d" "$WORK/sni-passthrough.map" "$WORK"/cloudflare-only.*
+sed -i "s|/etc/haproxy/redirect-hosts.lst|/cfg/redirect-hosts.lst|g" "$WORK/haproxy.cfg"
+chmod -R a+rX "$WORK/conf.d" "$WORK/sni-passthrough.map" "$WORK"/cloudflare-only.* "$WORK/redirect-hosts.lst"
 # Rewrite absolute paths to the container's mount point. Mounting at a fixed
 # path rather than mirroring the host path matters: some docker setups give the
 # daemon a private /tmp, and a same-path mount under /tmp is then invisible
@@ -119,6 +133,55 @@ if grep -qx 'cdn.example.com be_pt_terminate' "$WORK/sni-passthrough.map" \
   echo "    terminate and cloudflare-only options rendered correctly"
 else
   echo "    terminate / cloudflare-only options did not render correctly"; fail=1
+fi
+
+# A wildcard gets its own backend under a name no hostname can produce, its
+# exception keeps a separate one and is not Cloudflare-only, and a terminated
+# wildcard is routed by the resolved entry inside the decrypting frontend.
+if grep -qx '\*.wild.example.com be_pt___wild_example_com' "$WORK/sni-passthrough.map" \
+   && grep -qx 'own.wild.example.com be_pt_own_wild_example_com' "$WORK/sni-passthrough.map" \
+   && grep -qx '\*.wild.example.com' "$WORK/cloudflare-only.passthrough.lst" \
+   && ! grep -qx 'own.wild.example.com' "$WORK/cloudflare-only.passthrough.lst" \
+   && grep -qx '\*.term.example.com be_pt_terminate' "$WORK/sni-passthrough.map" \
+   && grep -qF 'use_backend be_pt___term_example_com if { var(txn.pt_key) -m str *.term.example.com }' "$WORK/conf.d/10-passthrough.cfg"; then
+  echo "    wildcard passthrough entries and their exceptions rendered correctly"
+else
+  echo "    wildcard passthrough entries did not render correctly"; fail=1
+fi
+
+# Redirect hosts reach the decrypting frontend unless a terminated wildcard
+# already covers them; the longer prefix is tried first; port 80 has them all.
+cfg="$WORK/conf.d/10-passthrough.cfg"
+if grep -qx 'go.example.com be_pt_terminate' "$WORK/sni-passthrough.map" \
+   && grep -qx 'old.example.com be_pt_terminate' "$WORK/sni-passthrough.map" \
+   && ! grep -q '^app.term.example.com ' "$WORK/sni-passthrough.map" \
+   && grep -qx 'go.example.com' "$WORK/redirect-hosts.lst" \
+   && grep -qx 'app.term.example.com' "$WORK/redirect-hosts.lst" \
+   && grep -qF 'http-request redirect location "https://new.example.net%[pathq]" code 308' "$cfg" \
+   && grep -qF 'http-request redirect location "https://dl.example.net" code 302' "$cfg" \
+   && [[ "$(grep -n 'location "https://b.example.net%\[pathq,regsub(^/sub/x,)\]" code 301' "$cfg" | head -1 | cut -d: -f1)" \
+         -lt "$(grep -n 'location "https://a.example.net/sub%\[pathq,regsub(^/sub,)\]" code 302' "$cfg" | head -1 | cut -d: -f1)" ]] \
+   && grep -q '^backend be_http_redirects' "$cfg"; then
+  echo "    HTTP redirects rendered correctly"
+else
+  echo "    HTTP redirects did not render correctly"; fail=1
+fi
+
+# A port= entry is kept off 443 (be_reject in the 443 map) and gets its own
+# listener; 443+8443 is on both; a redirect on another port gets a listener and
+# stays off port 80's list; plain HTTP on the extra ports goes to pt_http_in.
+if grep -qx 'alt.example.com be_reject' "$WORK/sni-passthrough.map" \
+   && grep -qx 'dual.example.com be_pt_terminate' "$WORK/sni-passthrough.map" \
+   && grep -qx 'side.example.com be_reject' "$WORK/sni-passthrough.map" \
+   && ! grep -qx 'side.example.com' "$WORK/redirect-hosts.lst" \
+   && grep -q '^frontend pt_port_8443' "$cfg" && grep -q '^frontend pt_port_9443' "$cfg" \
+   && grep -qF 'use_backend be_pt_alt_example_com if tls_hello { var(txn.pt_key) -m str alt.example.com }' "$cfg" \
+   && grep -qF 'use_backend be_pt_terminate if tls_hello { var(txn.pt_key) -m str dual.example.com }' "$cfg" \
+   && grep -q '^frontend pt_http_in' "$cfg" \
+   && grep -qF '{ hdr(host),field(1,:),lower -m str side.example.com } { dst_port 9443 }' "$cfg"; then
+  echo "    port= listeners rendered correctly"
+else
+  echo "    port= listeners did not render correctly"; fail=1
 fi
 
 echo "==> rsyslog"

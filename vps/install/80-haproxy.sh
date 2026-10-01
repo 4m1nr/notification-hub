@@ -42,6 +42,7 @@ if [[ ! -f /etc/haproxy/passthrough.conf ]]; then
   log "seeded /etc/haproxy/passthrough.conf (no domains configured yet)"
 fi
 [[ -f /etc/haproxy/sni-passthrough.map ]] || install -m 0644 /dev/null /etc/haproxy/sni-passthrough.map
+[[ -f /etc/haproxy/redirect-hosts.lst ]] || install -m 0644 /dev/null /etc/haproxy/redirect-hosts.lst
 
 # Cloudflare edge ranges, for domains proxied through Cloudflare. The config
 # references the file, so it must exist even if the first fetch fails (no
@@ -199,5 +200,9 @@ log "it is not relying on the proxy alone."
 log ""
 log "TLS passthrough for other services on this host:"
 log "  $HUB_PREFIX/bin/passthrough.sh add <domain> <host:port> [proxy-protocol] [cloudflare-only] [terminate]"
+log "  (<domain> may be a quoted '*.example.com'; a specific name is an exception to it;"
+log "   port=N[,N...] listens there instead of 443 — open the port in the firewall)"
 log "  $HUB_PREFIX/bin/passthrough.sh list"
+log "HTTP redirects (host or host/path prefix, path and query kept):"
+log "  $HUB_PREFIX/bin/passthrough.sh redirect add x.example.com/sub https://other.example.com/sub [301|302|307|308] [drop-path]"
 log "(the table is /etc/haproxy/passthrough.conf and is not tracked in git)"
