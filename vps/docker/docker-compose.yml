@@ -27,6 +27,13 @@ services:
       # feature that gets past a login form — is unavailable.
       PLAYWRIGHT_DRIVER_URL: "ws://sockpuppet:3000"
       USE_X_SETTINGS: "1"
+      # Checks run at once (upstream default 10). Each in-flight check holds its
+      # page in memory; two is plenty for a personal watch list.
+      FETCH_WORKERS: "2"
+    # Every container is capped so a spike is contained to it instead of making
+    # the kernel kill something else on a shared box. The default is here; set
+    # the variable in hub.env to raise one without editing this file.
+    mem_limit: ${CD_MEM_LIMIT:-256m}
     depends_on:
       - sockpuppet
 
@@ -44,7 +51,10 @@ services:
       SCREEN_WIDTH: "1920"
       SCREEN_HEIGHT: "1024"
       SCREEN_DEPTH: "16"
-      MAX_CONCURRENT_CHROME_PROCESSES: "4"
+      # One page at a time. Chromium is the biggest memory spike in the stack,
+      # and checks simply queue behind each other.
+      MAX_CONCURRENT_CHROME_PROCESSES: "1"
+    mem_limit: ${BROWSER_MEM_LIMIT:-768m}
 
   healthchecks:
     image: healthchecks/healthchecks:latest
@@ -79,6 +89,11 @@ services:
       # Email is not configured; alerts are delivered to the phone via ntfy.
       EMAIL_HOST: ""
 
+      # The image's uwsgi.ini starts four workers unless this is set, about 70 MB
+      # each. One serves a single user and the pings comfortably.
+      UWSGI_PROCESSES: "1"
+    mem_limit: ${HC_MEM_LIMIT:-256m}
+
   # Calibre-Web-Automated: the book library. Web reader, OPDS, Kobo sync, and an
   # ingest folder it watches, converting and importing whatever lands there.
   #
@@ -107,6 +122,8 @@ services:
       TRUSTED_PROXY_COUNT: "1"
       # Local disk: keep SQLite's WAL mode and inotify-based watching.
       NETWORK_SHARE_MODE: "false"
+    # Converting a large PDF with Calibre is CWA's peak.
+    mem_limit: ${CWA_MEM_LIMIT:-768m}
 
   # Shelfmark (formerly calibre-web-automated-book-downloader): searches Anna's
   # Archive and its mirrors and downloads into CWA's ingest folder.
@@ -141,5 +158,7 @@ services:
       AUTH_METHOD: proxy
       PROXY_AUTH_USER_HEADER: X-Auth-User
     # The bundled browser is the memory hog. Cap it so a runaway Chromium cannot
-    # take ntfy and PostgreSQL down with it.
-    mem_limit: 2g
+    # take ntfy and PostgreSQL down with it, and let it spill into swap (as much
+    # again) rather than being killed mid-download when the host has some.
+    mem_limit: ${SHELFMARK_MEM_LIMIT:-1g}
+    memswap_limit: ${SHELFMARK_MEMSWAP_LIMIT:-2g}
