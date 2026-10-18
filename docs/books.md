@@ -59,8 +59,8 @@ Search, pick a result, download. Within a minute or so it should appear in CWA.
 
 Without a membership ("donator") key, downloads go through Anna's Archive's slow
 download pages, which sit behind Cloudflare. Shelfmark's standard image ships a
-Chromium to get past that, which is why it is capped at 2 GB RAM in
-`docker-compose.yml`. Slow downloads also queue, so a big batch takes a while.
+Chromium to get past that. That browser is the memory peak, so the container is
+capped at `SHELFMARK_MEM_LIMIT` (default 1g, plus as much again in swap). Slow downloads also queue, so a big batch takes a while.
 
 Anna's Archive changes domains often. Shelfmark tries `AA_MIRROR_URLS` in order
 and fails over. When downloads start failing for every book, fix the list
@@ -151,8 +151,12 @@ ls -l /var/lib/books/ingest/      # files stuck here = CWA is not importing
 - **Shelfmark downloads but nothing appears in CWA.** Check the ingest folder.
   If files sit there, check ownership (`books:books`) and the CWA log.
 - **Every download fails.** It is almost always the mirror list (above). Also
-  check `docker stats shelfmark` — if it sits at the 2 GB cap, the bypass browser
-  is being OOM-killed.
+  check `docker stats shelfmark` — if it sits at its limit, the bypass browser
+  is being OOM-killed. Raise `SHELFMARK_MEM_LIMIT` in `hub.env` (or add swap) and
+  re-run `90-docker-apps.sh`.
+- **A big PDF upload or conversion fails.** Same check for `cwa` against
+  `CWA_MEM_LIMIT`; `docker inspect cwa --format '{{.State.OOMKilled}}'` says
+  whether it was killed for memory.
 - **CWA logs you out repeatedly.** `TRUSTED_PROXY_COUNT` must be `1`, and if the
   domain is proxied through Cloudflare, HAProxy already rewrites the client
   address, so it stays `1`.

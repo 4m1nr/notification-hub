@@ -85,6 +85,34 @@ if ! grep -q "$MARKER" "$PG_HBA"; then
   systemctl reload postgresql
 fi
 
+# Memory: a single-user hub needs a fraction of the stock sizing. shared_buffers
+# is allocated up front and max_connections reserves per-slot memory, so both
+# are trimmed. Written to the cluster's conf.d (which Ubuntu's postgresql.conf
+# includes) so the main config is never rewritten. Skipped when the cluster
+# also hosts databases that are not ours: their load is not ours to guess.
+PG_CONF_DIR="$(dirname "$(su - postgres -c 'psql -tAX -c "SHOW config_file"')")/conf.d"
+PG_TUNING="$PG_CONF_DIR/notification-hub.conf"
+foreign_dbs="$(su - postgres -c "psql -tAX -c \"SELECT datname FROM pg_database WHERE NOT datistemplate AND datname NOT IN ('postgres','ntfy','miniflux','healthchecks')\"")"
+if [[ -n "$foreign_dbs" ]]; then
+  warn "this cluster also holds other databases ($(echo $foreign_dbs)); leaving its memory settings alone"
+else
+  ensure_dir "$PG_CONF_DIR" 0755 postgres:postgres
+  tmp="$(mktemp)"
+  cat > "$tmp" <<'EOF'
+# Written by notification-hub (vps/install/20-postgres.sh). ntfy, Miniflux and
+# healthchecks together hold well under 20 connections.
+shared_buffers = 64MB
+max_connections = 40
+EOF
+  if ! cmp -s "$tmp" "$PG_TUNING"; then
+    install -o postgres -g postgres -m 0644 "$tmp" "$PG_TUNING"
+    # Both settings are read only at server start.
+    log "postgres memory settings changed; restarting the cluster (ntfy, Miniflux and healthchecks reconnect)"
+    systemctl restart postgresql
+  fi
+  rm -f "$tmp"
+fi
+
 # Confirm we did not accidentally expose a TCP listener.
 if ss -ltn 2>/dev/null | grep -qE "[^0-9]${PG_PORT}\\b"; then
   warn "PostgreSQL is listening on TCP:${PG_PORT} — the design expects unix-socket-only access"
