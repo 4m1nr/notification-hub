@@ -330,4 +330,10 @@ backend be_books
     server cwa 127.0.0.1:${CWA_PORT} check
 
 backend be_fetch
+    # A release lookup searches every mirror, often through the Cloudflare-
+    # bypass browser, before it answers; that routinely takes longer than the
+    # 60s default and surfaced as "Error Loading Releases (504)". Its live
+    # status updates are a WebSocket, which needs the tunnel timeout as well.
+    timeout server 5m
+    timeout tunnel 1h
     server shelfmark 127.0.0.1:${SHELFMARK_PORT} check
