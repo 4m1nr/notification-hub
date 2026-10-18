@@ -22,7 +22,7 @@ something already holds a port it needs. See
 - Ubuntu 26.04, root or sudo.
 - Ports 80 and 443 reachable from the internet. Nothing else needs opening.
 
-**DNS** — four A records pointing at the VPS, resolving *before* you start.
+**DNS** — six A records pointing at the VPS, resolving *before* you start.
 Certificates cannot be issued otherwise:
 
 | Record | Purpose |
@@ -31,6 +31,8 @@ Certificates cannot be issued otherwise:
 | `rss.example.com` | Miniflux, managed from the phone |
 | `watch.example.com` | changedetection.io |
 | `checks.example.com` | healthchecks.io |
+| `books.example.com` | Calibre-Web-Automated — the book library |
+| `fetch.example.com` | Shelfmark — Anna's Archive downloader |
 
 **Elsewhere:**
 
@@ -41,12 +43,12 @@ Certificates cannot be issued otherwise:
 Check DNS before going further:
 
 ```bash
-for d in ntfy rss watch checks; do
+for d in ntfy rss watch checks books fetch; do
   printf '%-24s %s\n' "$d.example.com" "$(dig +short "$d.example.com" | tail -1)"
 done
 ```
 
-All four must show your VPS's address.
+All six must show your VPS's address.
 
 ---
 
@@ -69,6 +71,8 @@ NTFY_DOMAIN=ntfy.example.com
 MINIFLUX_DOMAIN=rss.example.com
 CD_DOMAIN=watch.example.com
 HC_DOMAIN=checks.example.com
+BOOKS_DOMAIN=books.example.com
+SHELFMARK_DOMAIN=fetch.example.com
 ACME_EMAIL=you@example.com
 
 SSH_PORT=22                 # must match what sshd actually listens on
@@ -193,6 +197,8 @@ ntfy.example.com    /etc/certs/proxy/ntfy     root:haproxy   both    haproxy
 rss.example.com     /etc/certs/proxy/rss      root:haproxy   both    haproxy
 watch.example.com   /etc/certs/proxy/watch    root:haproxy   both    haproxy
 checks.example.com  /etc/certs/proxy/checks   root:haproxy   both    haproxy
+books.example.com   /etc/certs/proxy/books    root:haproxy   both    haproxy
+fetch.example.com   /etc/certs/proxy/fetch    root:haproxy   both    haproxy
 ```
 
 > Do **not** add plain TLS-passthrough domains here, and do not add the syslog
@@ -207,7 +213,8 @@ it binds `ACME_HTTP_PORT` and HAProxy forwards the challenge. Either way it
 distributes the result:
 
 ```bash
-for d in ntfy.example.com rss.example.com watch.example.com checks.example.com; do
+for d in ntfy.example.com rss.example.com watch.example.com checks.example.com \
+         books.example.com fetch.example.com; do
   sudo /opt/notification-hub/bin/issue-cert.sh "$d"
 done
 ```
@@ -355,7 +362,7 @@ curl -s -o /dev/null -w '%{http_code}\n' "$NTFY_URL/mail/json?poll=1"          #
 
 ---
 
-## 9. changedetection.io and healthchecks.io
+## 9. changedetection.io, healthchecks.io, and books
 
 ```bash
 sudo ./bootstrap.sh 90-docker-apps.sh
@@ -364,9 +371,14 @@ sudo docker compose exec healthchecks ./manage.py createsuperuser
 cd -
 ```
 
-Both are behind the basic auth from step 6. Also set a password *inside*
-changedetection (**Settings → Password**) so it is not relying on the proxy
-alone.
+changedetection, Shelfmark and the healthchecks UI are behind the basic auth
+from step 6. Also set a password *inside* changedetection (**Settings →
+Password**) so it is not relying on the proxy alone.
+
+Calibre-Web-Automated is **not** behind basic auth (e-readers could not get
+past it) and ships with `admin` / `admin123`. Log in to
+`https://books.example.com/` and change it now, then follow
+[books.md](books.md) for the rest.
 
 Now create the checks. Log in to `https://checks.example.com/` and add five,
 per [healthchecks-setup.md](healthchecks-setup.md):

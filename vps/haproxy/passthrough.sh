@@ -297,7 +297,8 @@ hub_domains() {
     set +u
     # shellcheck disable=SC1090
     source "$HUB_ENV" >/dev/null 2>&1
-    printf '%s\n' "${NTFY_DOMAIN:-}" "${MINIFLUX_DOMAIN:-}" "${CD_DOMAIN:-}" "${HC_DOMAIN:-}"
+    printf '%s\n' "${NTFY_DOMAIN:-}" "${MINIFLUX_DOMAIN:-}" "${CD_DOMAIN:-}" "${HC_DOMAIN:-}" \
+      "${BOOKS_DOMAIN:-}" "${SHELFMARK_DOMAIN:-}"
   ) | tr '[:upper:]' '[:lower:]' | grep -v '^$' || true
 }
 

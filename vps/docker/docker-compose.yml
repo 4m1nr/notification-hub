@@ -1,9 +1,10 @@
 # The only containers in this stack.
 #
-# Everything else on the VPS runs natively. These three stay containerised
-# deliberately: changedetection.io and healthchecks.io are Python apps with large,
-# fast-moving dependency trees, and sockpuppetbrowser is a packaged Chromium that
-# is genuinely painful to pin by hand.
+# Everything else on the VPS runs natively. These stay containerised
+# deliberately: changedetection.io, healthchecks.io, Calibre-Web-Automated and
+# Shelfmark are Python apps with large, fast-moving dependency trees (CWA also
+# bundles Calibre itself), and sockpuppetbrowser and Shelfmark's Cloudflare
+# bypasser are packaged Chromiums that are genuinely painful to pin by hand.
 
 name: notification-hub
 
@@ -77,3 +78,68 @@ services:
       NTFY_ENABLED: "True"
       # Email is not configured; alerts are delivered to the phone via ntfy.
       EMAIL_HOST: ""
+
+  # Calibre-Web-Automated: the book library. Web reader, OPDS, Kobo sync, and an
+  # ingest folder it watches, converting and importing whatever lands there.
+  #
+  # Its state is SQLite and cannot be moved into the shared PostgreSQL: the
+  # library *is* Calibre's metadata.db, which Calibre's own tools (run by CWA on
+  # every import) read and write directly, and app.db is Calibre-Web's, with no
+  # database URL setting at all. backup.sh snapshots both with sqlite3 .backup.
+  cwa:
+    image: crocodilestick/calibre-web-automated:latest
+    container_name: cwa
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${CWA_PORT}:8083"
+    volumes:
+      - /var/lib/books/cwa-config:/config
+      - /var/lib/books/library:/calibre-library
+      # Shared with shelfmark below: it downloads here, CWA imports and then
+      # deletes the file.
+      - /var/lib/books/ingest:/cwa-book-ingest
+    environment:
+      PUID: "${BOOKS_UID}"
+      PGID: "${BOOKS_GID}"
+      TZ: "${BOOKS_TZ}"
+      # HAProxy is the one proxy in front, so CWA trusts exactly one hop of
+      # X-Forwarded-For. Wrong here and sessions break or the client IP is lost.
+      TRUSTED_PROXY_COUNT: "1"
+      # Local disk: keep SQLite's WAL mode and inotify-based watching.
+      NETWORK_SHARE_MODE: "false"
+
+  # Shelfmark (formerly calibre-web-automated-book-downloader): searches Anna's
+  # Archive and its mirrors and downloads into CWA's ingest folder.
+  #
+  # It has no authentication by default. HAProxy gates it behind the admin basic
+  # auth and passes the signed-in user in X-Auth-User, which AUTH_METHOD=proxy
+  # trusts — safe only because this port is loopback and HAProxy strips any
+  # client-supplied copy of that header.
+  shelfmark:
+    image: ghcr.io/calibrain/shelfmark:latest
+    container_name: shelfmark
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${SHELFMARK_PORT}:8084"
+    volumes:
+      - /var/lib/books/shelfmark-config:/config
+      - /var/lib/books/ingest:/books
+    environment:
+      PUID: "${BOOKS_UID}"
+      PGID: "${BOOKS_GID}"
+      TZ: "${BOOKS_TZ}"
+      INGEST_DIR: /books
+      BOOK_LANGUAGE: "${BOOK_LANGUAGE}"
+      # Anna's Archive moves between domains often. "auto" tries AA_MIRROR_URLS
+      # in order and fails over, so a dead mirror is a hub.env edit, not a
+      # code change.
+      AA_BASE_URL: auto
+      AA_MIRROR_URLS: "${AA_MIRROR_URLS}"
+      # Without a donator key the slow download pages sit behind Cloudflare;
+      # the standard image's bundled Chromium gets past it.
+      USE_CF_BYPASS: "true"
+      AUTH_METHOD: proxy
+      PROXY_AUTH_USER_HEADER: X-Auth-User
+    # The bundled browser is the memory hog. Cap it so a runaway Chromium cannot
+    # take ntfy and PostgreSQL down with it.
+    mem_limit: 2g

@@ -16,10 +16,11 @@ mail-watcher      ──┐                                                     
 mattermost-watcher──┘                  │              │                     │
   WebSocket + PAT                      │     ntfy     │◀── subscribe ───────┤
                                        │              │                     │
-Miniflux ──webhook──▶ rss-relay ──────▶│  7 topics    │                     │
+Miniflux ──webhook──▶ rss-relay ──────▶│  8 topics    │                     │
 rsyslog (local) ──omprog─▶ syslog-ntfy▶│              │                     │
 changedetection ──Apprise─────────────▶│              │                     │
 healthchecks ──ntfy integration───────▶│              │                     │
+Shelfmark ──Apprise───────────────────▶│              │                     │
 backup.sh ──on failure────────────────▶└──────────────┘                     │
 ```
 
@@ -36,17 +37,18 @@ phone to reach, and it is always on.
 **The phone talks to one endpoint.** Adding a source never means reconfiguring
 the phone — a new source is a new publisher against an existing topic.
 
-## Native, with three exceptions
+## Native, with a few exceptions
 
 ntfy, Miniflux, PostgreSQL, HAProxy, rsyslog and our four Go services are
 ordinary systemd units. Packages, binaries, unit files — things that upgrade with
 `apt` and debug with `journalctl`.
 
-Three containers remain, and the reasoning is the same for all of them: they are
-Python/Chromium stacks whose dependency trees move fast and pin badly by hand.
-changedetection.io, its `sockpuppetbrowser` (a packaged Chromium), and
-healthchecks.io. All three publish only to `127.0.0.1`; HAProxy stays the single
-TLS terminator.
+The containers that remain share one reason: they are Python/Chromium stacks
+whose dependency trees move fast and pin badly by hand. changedetection.io, its
+`sockpuppetbrowser` (a packaged Chromium), healthchecks.io, and the books pair —
+Calibre-Web-Automated (which bundles Calibre itself) and Shelfmark (which
+bundles a Chromium for its Cloudflare bypass). All of them publish only to
+`127.0.0.1`; HAProxy stays the single TLS terminator.
 
 ## One database, three tenants
 
@@ -67,6 +69,12 @@ would not work: the container's UID matches no host user.)
 
 changedetection.io is the exception. It has no SQL backend at all — its state is a
 JSON datastore on disk, bind-mounted at `/var/lib/changedetection`.
+
+So are the books apps, under `/var/lib/books`, and they cannot be moved in: a
+Calibre library *is* its SQLite `metadata.db`, which Calibre's own tools (run by
+CWA on every import) open directly, and CWA's `app.db` is inherited from
+Calibre-Web with no database URL setting. Shelfmark keeps file and SQLite state
+in its `/config`. The backup snapshots all of them with `sqlite3 .backup`.
 
 ## TLS: one port, three behaviours
 

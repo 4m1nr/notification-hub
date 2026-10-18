@@ -11,6 +11,7 @@
 | `site-changes` | changedetection.io | 3 |
 | `system` | healthchecks.io — a watcher went quiet | 4–5 |
 | `backup` | The daily backup job, on failure only | 5 |
+| `books` | Shelfmark — download finished or failed ([books.md](books.md)) | 3 |
 
 ## Why the topics are locked down
 

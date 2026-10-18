@@ -110,6 +110,14 @@ done
 sudo install -m 0640 restore/config/domains.map /etc/notification-hub/domains.map
 sudo mkdir -p /var/lib/changedetection
 sudo cp -a restore/changedetection/. /var/lib/changedetection/
+
+# Books: catalogue and settings only — the book files were never in the
+# archive. Put the files back in /var/lib/books/library first (from wherever
+# you copied them), then the catalogue on top, so metadata.db matches them.
+# 90-docker-apps.sh (step 5) creates the books user and fixes nothing here, so
+# chown after it has run if the user did not exist yet.
+sudo mkdir -p /var/lib/books
+sudo cp -a restore/books/. /var/lib/books/
 ```
 
 ### 5. Re-issue certificates and finish
@@ -126,6 +134,7 @@ sudo /opt/notification-hub/bin/issue-cert.sh ntfy.example.com
 # See docs/certificates.md, "After a restore".
 
 sudo ./bootstrap.sh 80-haproxy.sh 90-docker-apps.sh 60-syslog.sh 95-backup.sh
+sudo chown -R books:books /var/lib/books
 ```
 
 Your phone keeps working without reconfiguration: the ntfy users, tokens and ACLs

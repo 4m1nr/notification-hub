@@ -14,7 +14,8 @@ apt_ensure \
   certbot \
   age \
   socat \
-  jq
+  jq \
+  sqlite3
 
 # Go toolchain — used to build our four services from source on the box, so the
 # repo never has to ship binaries.

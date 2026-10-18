@@ -48,8 +48,10 @@ defaults
 #
 # changedetection.io ships with NO authentication of its own, and it drives a
 # real browser that holds your saved logins — so it must never be reachable
-# without a credential. healthchecks has a Django login, but gating it here too
-# means a brute-force attempt never reaches the application at all.
+# without a credential. Shelfmark is the same: no login by default, and it
+# makes this host download whatever is asked of it. healthchecks has a Django
+# login, but gating it here too means a brute-force attempt never reaches the
+# application at all.
 #-----------------------------------------------------------------------------
 userlist admin_users
     user @@ADMIN_UI_USER@@ password @@ADMIN_UI_PASSWORD_HASH@@
@@ -97,7 +99,7 @@ frontend tls_in
 
     acl tls_hello       req.ssl_hello_type 1
     acl from_cloudflare src -f /etc/haproxy/cloudflare-ips.lst
-    acl sni_hub         req.ssl_sni -i ${NTFY_DOMAIN} ${MINIFLUX_DOMAIN} ${CD_DOMAIN} ${HC_DOMAIN}
+    acl sni_hub         req.ssl_sni -i ${NTFY_DOMAIN} ${MINIFLUX_DOMAIN} ${CD_DOMAIN} ${HC_DOMAIN} ${BOOKS_DOMAIN} ${SHELFMARK_DOMAIN}
 
     # --- TLS passthrough: which table entry does this SNI belong to? ---
     # The routing table lives in /etc/haproxy/passthrough.conf, outside this
@@ -224,6 +226,8 @@ frontend https_in
     acl host_rss    hdr(host) -i ${MINIFLUX_DOMAIN}
     acl host_watch  hdr(host) -i ${CD_DOMAIN}
     acl host_checks hdr(host) -i ${HC_DOMAIN}
+    acl host_books  hdr(host) -i ${BOOKS_DOMAIN}
+    acl host_fetch  hdr(host) -i ${SHELFMARK_DOMAIN}
 
     # ---- Tier 0: everything is tracked ----
     http-request track-sc0 src table st_clients
@@ -250,7 +254,8 @@ frontend https_in
 
     # ---- Login forms get their own, far tighter budget ----
     # Miniflux posts its login to /, healthchecks to /accounts/login/,
-    # changedetection to /login. Ten attempts per five minutes per address.
+    # changedetection and Calibre-Web-Automated to /login. Ten attempts per five
+    # minutes per address.
     # The / rule is scoped to Miniflux's host: ntfy's JSON publish endpoint is
     # also POST /, and the watchers would be throttled as if they were
     # guessing passwords.
@@ -271,15 +276,30 @@ frontend https_in
     acl admin_authed  http_auth(admin_users)
     http-request auth realm "notification-hub" if host_watch !acme_challenge !admin_authed
     http-request auth realm "notification-hub" if host_checks !hc_open !acme_challenge !admin_authed
+    http-request auth realm "notification-hub" if host_fetch !acme_challenge !admin_authed
+
+    # Shelfmark runs with AUTH_METHOD=proxy and trusts X-Auth-User as the
+    # signed-in user, so the header must only ever come from here: any copy the
+    # client sent is removed for every host, then set from the basic-auth user
+    # that was just verified.
+    #
+    # Calibre-Web-Automated is deliberately NOT behind basic auth. E-readers
+    # reach its OPDS feed and Kobo sync with CWA's own credentials, and a
+    # second challenge in front would break them. Its login is rate-limited
+    # above and its 401s feed the abuse tiers and fail2ban like everything else.
+    http-request del-header X-Auth-User
+    http-request set-header X-Auth-User %[http_auth_user] if host_fetch admin_authed
 
     # An unknown Host header is almost always a scanner probing the IP directly.
-    http-request deny deny_status 421 unless host_ntfy || host_rss || host_watch || host_checks
+    http-request deny deny_status 421 unless host_ntfy || host_rss || host_watch || host_checks || host_books || host_fetch
 
     use_backend be_acme   if acme_challenge
     use_backend be_ntfy   if host_ntfy
     use_backend be_rss    if host_rss
     use_backend be_watch  if host_watch
     use_backend be_checks if host_checks
+    use_backend be_books  if host_books
+    use_backend be_fetch  if host_fetch
 
 #-----------------------------------------------------------------------------
 # Backends. Every service listens on loopback only.
@@ -301,3 +321,13 @@ backend be_watch
 
 backend be_checks
     server healthchecks 127.0.0.1:${HC_PORT} check
+
+backend be_books
+    # Uploading a book through the web UI waits on CWA's import and conversion
+    # before it answers, which can take well over the 60s default for a large
+    # PDF.
+    timeout server 5m
+    server cwa 127.0.0.1:${CWA_PORT} check
+
+backend be_fetch
+    server shelfmark 127.0.0.1:${SHELFMARK_PORT} check
