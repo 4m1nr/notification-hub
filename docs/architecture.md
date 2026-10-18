@@ -48,7 +48,10 @@ whose dependency trees move fast and pin badly by hand. changedetection.io, its
 `sockpuppetbrowser` (a packaged Chromium), healthchecks.io, and the books pair —
 Calibre-Web-Automated (which bundles Calibre itself) and Shelfmark (which
 bundles a Chromium for its Cloudflare bypass). All of them publish only to
-`127.0.0.1`; HAProxy stays the single TLS terminator.
+`127.0.0.1`; HAProxy stays the single TLS terminator. Each has a memory cap
+(`*_MEM_LIMIT` in hub.env), since the VPS is usually shared: a spike stays in
+the container that caused it. They also run at minimum concurrency: one
+healthchecks worker, two changedetection fetchers, and one Chromium page at a time.
 
 ## One database, three tenants
 

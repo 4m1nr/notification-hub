@@ -30,6 +30,15 @@ fi
 AA_MIRROR_URLS="$(set_env_var AA_MIRROR_URLS "https://annas-archive.gl,https://annas-archive.org,https://annas-archive.se,https://annas-archive.li")"
 export CWA_PORT SHELFMARK_PORT BOOK_LANGUAGE BOOKS_TZ AA_MIRROR_URLS
 
+# Memory caps: the defaults live in docker-compose.yml, and a *_MEM_LIMIT line
+# in hub.env overrides one. Shelfmark's memory+swap cap must be an absolute
+# value, so when its limit is overridden the swap cap is derived as twice that
+# and recorded beside it (compose reads hub.env directly, so backup.sh and a
+# hand-run `docker compose` see it too).
+if [[ -n "${SHELFMARK_MEM_LIMIT:-}" ]]; then
+  put_env_var SHELFMARK_MEMSWAP_LIMIT "$(( $(numfmt --from=iec "${SHELFMARK_MEM_LIMIT^^}") * 2 ))"
+fi
+
 ensure_sysuser books
 put_env_var BOOKS_UID "$(id -u books)"
 put_env_var BOOKS_GID "$(id -g books)"

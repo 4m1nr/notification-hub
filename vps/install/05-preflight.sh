@@ -73,15 +73,28 @@ while read -r target; do
   fi
 done < <(grep -oE 'server srv[0-9]+ 127\.0\.0\.1:[0-9]+' "$REPO_ROOT/vps/haproxy/haproxy.cfg.tmpl" | awk '{print $3}')
 
-# Shelfmark's bundled Chromium (the Cloudflare bypass) is capped at 2 GB, on top
-# of everything else here. Not fatal: a smaller box works until a download
-# needs the browser, then the OOM killer picks something.
+# Memory. What matters on a shared box is what is *available* now, not the
+# installed total: a 4 GB VPS whose other services already use 3.6 GB has no
+# room for this stack, and with no swap the kernel's OOM killer then picks a
+# victim — quite possibly something that is not ours. Not fatal: other services'
+# usage moves, and the caps in docker-compose.yml bound our own share.
+#   meminfo_kb <field> [file] prints a /proc/meminfo field in kB.
+meminfo_kb() { awk -v f="$1:" '$1 == f {print $2}' "${2:-/proc/meminfo}"; }
 log "checking memory"
-mem_kb="$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)"
-if (( mem_kb < 3 * 1024 * 1024 )); then
-  warn "  only $((mem_kb / 1024)) MB RAM — Shelfmark's browser alone may use up to 2 GB"
-else
-  log "  $((mem_kb / 1024)) MB RAM"
+mem_avail_kb="$(meminfo_kb MemAvailable "${MEMINFO:-}")"
+swap_kb="$(meminfo_kb SwapTotal "${MEMINFO:-}")"
+log "  $((mem_avail_kb / 1024)) MB available, $((swap_kb / 1024)) MB swap"
+if (( mem_avail_kb < 1536 * 1024 )); then
+  if (( swap_kb == 0 )); then
+    warn "  under 1.5 GB available and NO swap: a memory spike will get processes killed"
+  else
+    warn "  under 1.5 GB available: expect swapping when the browsers run"
+  fi
+  warn "  largest processes right now:"
+  ps -eo rss=,comm= --sort=-rss | head -n 5 | while read -r rss comm; do
+    warn "      $((rss / 1024)) MB  $comm"
+  done
+  warn "  see docs/migrate-books.md, \"Memory\", for adding swap and the per-container caps"
 fi
 
 log "checking for conflicting package state"

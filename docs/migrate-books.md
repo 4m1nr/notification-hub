@@ -17,10 +17,58 @@ about 20 minutes, most of it waiting for image pulls.
 # A known-good backup from the current version
 sudo /opt/notification-hub/bin/backup.sh --dry-run
 
-# Memory and disk. Shelfmark's bypass browser may use up to 2 GB.
+# Memory and disk
 free -h
 df -h /var/lib
 ```
+
+### Memory
+
+Look at the **available** column of `free -h`, not *total*. The upgrade adds two
+containers, capped at 768 MB (CWA) and 1 GB (Shelfmark), though both sit well
+under that when idle. It also takes the hub's own footprint *down*: healthchecks
+drops from four workers to one (about 200 MB less), changedetection and its
+browser do one check at a time, Miniflux fetches with two workers, and PostgreSQL
+gets a smaller buffer pool. Every container is capped, so a spike stays in that
+container instead of making the kernel kill something else.
+
+If *available* is under about 1.5 GB, and above all if *Swap* shows `0B`, add
+swap first. On a small VPS it is the difference between a slow moment and the
+kernel killing a random process:
+
+```bash
+sudo fallocate -l 4G /swapfile
+sudo chmod 600 /swapfile
+sudo mkswap /swapfile && sudo swapon /swapfile
+echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+# Only swap under real pressure, not as soon as the page cache grows
+echo 'vm.swappiness=10' | sudo tee /etc/sysctl.d/99-swap.conf && sudo sysctl -p /etc/sysctl.d/99-swap.conf
+```
+
+Other things that help on a shared box:
+
+- **Tools you only open now and then** (pgadmin, for example) can be stopped
+  between uses: `docker stop pgadmin`, then `docker start pgadmin` when needed.
+- **Run Shelfmark on demand.** CWA does not need it running.
+  `cd /etc/notification-hub/docker && sudo docker compose stop shelfmark`,
+  then `start` when you want to fetch something.
+- **Caps** default in `docker-compose.yml` and can be overridden in `hub.env`.
+  If a container keeps getting killed, raise its cap there and re-run
+  `90-docker-apps.sh`. `docker stats` shows each container's usage against its
+  limit.
+
+  | Variable | Default | Container |
+  |---|---|---|
+  | `HC_MEM_LIMIT` | 256m | healthchecks |
+  | `CD_MEM_LIMIT` | 256m | changedetection |
+  | `BROWSER_MEM_LIMIT` | 768m | sockpuppet (changedetection's Chromium) |
+  | `CWA_MEM_LIMIT` | 768m | Calibre-Web-Automated |
+  | `SHELFMARK_MEM_LIMIT` | 1g | Shelfmark (it can also use as much again in swap) |
+
+- **The PostgreSQL change** (`shared_buffers = 64MB`, `max_connections = 40`, in
+  the cluster's `conf.d/notification-hub.conf`) restarts PostgreSQL once when you
+  re-run `20-postgres.sh`. ntfy, Miniflux and healthchecks reconnect on their own.
+  It is skipped when the cluster also holds databases that are not the hub's.
 
 Pick two names (the defaults below are just examples), and create DNS records
 for them pointing at the VPS. Proxied through Cloudflare is fine.
@@ -64,11 +112,16 @@ proxied.
 
 ## 3. Preflight and packages
 
+(If you want the PostgreSQL memory change, add `20-postgres.sh` to this run. It
+restarts PostgreSQL once, see [Memory](#memory).)
+
+
 ```bash
 sudo ./bootstrap.sh 05-preflight.sh 10-packages.sh
 ```
 
-Preflight now also checks `8083`/`8084` and warns about low memory. If a port is
+Preflight now also checks `8083`/`8084`, and warns when available memory is low
+or there is no swap, listing the largest processes. If a port is
 taken, change `CWA_PORT`/`SHELFMARK_PORT` and re-run. `10-packages.sh` adds
 `sqlite3`, which the backup needs for the book databases.
 

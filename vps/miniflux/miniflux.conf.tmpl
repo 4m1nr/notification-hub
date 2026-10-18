@@ -19,7 +19,9 @@ CREATE_ADMIN=0
 
 POLLING_FREQUENCY=60
 BATCH_SIZE=25
-WORKER_POOL_SIZE=5
+# Feed fetchers running at once. Two keeps memory flat; with POLLING_FREQUENCY
+# at 60 minutes they still get through hundreds of feeds an hour.
+WORKER_POOL_SIZE=2
 
 # The webhook that drives our relay. Miniflux signs each delivery with
 # X-Miniflux-Signature (HMAC-SHA256 over the body) using this secret; the relay
