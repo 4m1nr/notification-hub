@@ -37,7 +37,7 @@ systemctl restart ntfy
 sleep 2
 systemctl is-active --quiet ntfy || die "ntfy failed to start — check: journalctl -u ntfy -n 50"
 
-TOPICS=(mail mattermost rss syslog site-changes system backup)
+TOPICS=(mail mattermost rss syslog site-changes system backup books)
 
 # ntfy's CLI reads /etc/ntfy/server.yml, so it operates on PostgreSQL too.
 # It prints the listing to stderr, not stdout. Capture it before grepping: with
@@ -71,7 +71,8 @@ done
 
 # A separate token per source, so any one of them can be revoked on its own.
 for var in NTFY_TOKEN_MAIL NTFY_TOKEN_MATTERMOST NTFY_TOKEN_RSS \
-           NTFY_TOKEN_SYSLOG NTFY_TOKEN_SYSTEM NTFY_TOKEN_BACKUP NTFY_TOKEN_SITECHANGES; do
+           NTFY_TOKEN_SYSLOG NTFY_TOKEN_SYSTEM NTFY_TOKEN_BACKUP NTFY_TOKEN_SITECHANGES \
+           NTFY_TOKEN_BOOKS; do
   if ! grep -qE "^${var}=" "$HUB_ENV"; then
     # No --expires: that is how ntfy makes a token that never expires.
     token="$(ntfy token add --label="$var" publisher | grep -oE 'tk_[A-Za-z0-9]+' | head -n1)"

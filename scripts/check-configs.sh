@@ -42,9 +42,11 @@ render() {
 
 export NTFY_DOMAIN=ntfy.example.com MINIFLUX_DOMAIN=rss.example.com
 export CD_DOMAIN=watch.example.com HC_DOMAIN=checks.example.com
+export BOOKS_DOMAIN=books.example.com SHELFMARK_DOMAIN=fetch.example.com
 export SYSLOG_SEVERITY_MAX=4 SYSLOG_TLS_PORT=6514
 export ACME_HTTP_PORT=8402
 export NTFY_PORT=2586 MINIFLUX_PORT=8080 CD_PORT=5000 HC_PORT=8000
+export CWA_PORT=8083 SHELFMARK_PORT=8084
 
 fail=0
 

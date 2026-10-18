@@ -20,7 +20,9 @@ do not control, and the phone talks to exactly one endpoint.
 │                         └─ terminate ──┬──▶ ntfy            127.0.0.1:2586   │
 │                                        ├──▶ Miniflux        127.0.0.1:8080   │
 │                                        ├──▶ changedetection 127.0.0.1:5000   │
-│                                        └──▶ healthchecks    127.0.0.1:8000   │
+│                                        ├──▶ healthchecks    127.0.0.1:8000   │
+│                                        ├──▶ CWA (books)     127.0.0.1:8083   │
+│                                        └──▶ Shelfmark       127.0.0.1:8084   │
 │                                                                              │
 │   PostgreSQL (unix socket only) ── ntfy · miniflux · healthchecks databases   │
 │                                                                              │
@@ -28,6 +30,7 @@ do not control, and the phone talks to exactly one endpoint.
 │   Miniflux ──webhook──▶ rss-relay :8181 ────────┤                            │
 │   changedetection ──Apprise─────────────────────┼──▶ ntfy topics             │
 │   healthchecks ──built-in ntfy integration──────┤                            │
+│   Shelfmark ──Apprise───────────────────────────┤                            │
 │   backup.sh (daily) ────────────────────────────┘                            │
 │        └── age-encrypted tar.gz ──▶ private Telegram chat                    │
 └──────────────────────────────────────────────────────────────────────────────┘
@@ -41,23 +44,32 @@ do not control, and the phone talks to exactly one endpoint.
                           📱 ntfy Android app, one subscription per topic
 ```
 
-Topics: `mail`, `mattermost`, `rss`, `syslog`, `site-changes`, `system`, `backup`.
+Topics: `mail`, `mattermost`, `rss`, `syslog`, `site-changes`, `system`, `backup`, `books`.
+
+**Books, too.** [Calibre-Web-Automated](https://github.com/crocodilestick/Calibre-Web-Automated)
+holds the library (web reader, OPDS, Kobo sync) and
+[Shelfmark](https://github.com/calibrain/shelfmark) searches Anna's Archive and
+drops downloads into CWA's ingest folder. See [docs/books.md](docs/books.md), and
+[docs/migrate-books.md](docs/migrate-books.md) to add them to a hub that is
+already running.
 
 ## Design decisions worth knowing
 
 **Native, not containerised.** ntfy, Miniflux, PostgreSQL, HAProxy, rsyslog and
 all four of our own services run as ordinary systemd units. Only
-changedetection.io, its Playwright browser, and healthchecks.io are containers —
-those three are Python/Chromium stacks that are genuinely painful to pin by hand.
+changedetection.io, its Playwright browser, healthchecks.io, and the books pair
+(Calibre-Web-Automated, Shelfmark) are containers — Python/Chromium stacks that
+are genuinely painful to pin by hand.
 
 **One PostgreSQL, three databases.** ntfy, Miniflux and healthchecks each get
 their own database and their own role, and each role can connect only to its own
 database. Nothing listens on TCP; the container reaches the database through a
 bind-mounted unix socket. (changedetection.io is the exception — it has no SQL
-backend at all and keeps a JSON datastore on disk.)
+backend at all and keeps a JSON datastore on disk. So are the books apps: a
+Calibre library *is* a SQLite file, which Calibre's own tools open directly.)
 
 **It shares the box.** :443 is split by SNI, so services already proxied here
-keep terminating their own TLS and only this project's four domains are
+keep terminating their own TLS and only this project's own domains are
 decrypted. That routing table lives on the VPS, not in this repo, so adding a
 domain is `passthrough.sh add <domain> <host:port>` and a `git pull` can never
 overwrite it. Existing ufw rules, fail2ban jails and HAProxy configs are added to or

@@ -12,13 +12,15 @@ are.
 | 443 | HAProxy → changedetection | anywhere | **HTTP basic auth at the proxy** |
 | 443 | HAProxy → healthchecks UI | anywhere | **HTTP basic auth at the proxy** + Django login |
 | 443 | HAProxy → healthchecks `/ping/` | anywhere | the ping UUID itself |
+| 443 | HAProxy → Calibre-Web-Automated | anywhere | CWA login (web, OPDS, Kobo); login rate-limited at the proxy |
+| 443 | HAProxy → Shelfmark | anywhere | **HTTP basic auth at the proxy**, user passed as `X-Auth-User` |
 | 80 | HAProxy | anywhere | redirect to 443; ACME challenge only |
 | 22 | sshd | anywhere | your existing SSH config and jails |
 | 443 | HAProxy → TLS passthrough | anywhere | handled by the backend service itself |
 | 6514 | rsyslog | **127.0.0.1 only** | n/a — nothing external can connect |
 | 5432 | PostgreSQL | **unix socket only** | scram-sha-256, per-database roles |
 
-Everything else — ntfy, Miniflux, changedetection, healthchecks — binds to
+Everything else — ntfy, Miniflux, changedetection, healthchecks, CWA, Shelfmark — binds to
 loopback and is reachable only through HAProxy.
 
 ## Syslog: local only
@@ -82,7 +84,7 @@ address, independent of general traffic.
 **Volumetric limits.** 400 requests per 10s or 200 new connections per 10s → 429.
 
 **Unknown Host headers → 421.** Someone connecting to the raw IP and asking for
-something that is not one of your four domains is a scanner, and is refused
+something that is not one of your domains is a scanner, and is refused
 before reaching any backend.
 
 ### 2. HTTP basic auth on the admin UIs
@@ -97,10 +99,18 @@ The healthchecks web UI is gated the same way, on top of its own Django login.
 `/ping/` and `/api/` are exempt so the office PC can still check in; the ping
 UUID is the credential there.
 
+Shelfmark is the third. It also ships with no login by default and makes
+this host download whatever it is asked for. It runs with `AUTH_METHOD=proxy`:
+HAProxy checks the basic auth, deletes any `X-Auth-User` header the client
+sent (on every host), and sets it to the verified user. Shelfmark trusts that
+header only because its port is loopback-only, so HAProxy is the sole path to it.
+
 Credentials are in `ADMIN_UI_USER` / `ADMIN_UI_PASSWORD` in `hub.env`.
 
-Miniflux and ntfy are *not* behind basic auth — mobile clients cannot easily do
-two layers of authentication, and both have real authentication of their own.
+Miniflux, ntfy and Calibre-Web-Automated are *not* behind basic auth — mobile
+clients and e-readers (OPDS, Kobo sync) cannot easily do two layers of
+authentication, and all three have real authentication of their own. Change
+CWA's shipped `admin` / `admin123` before anything else.
 They rely on the rate limiting above and the bans below.
 
 ### 3. fail2ban, at the firewall
@@ -227,7 +237,7 @@ things, so every step that touches shared state is additive:
 | **HAProxy** | An existing config not written by this project is backed up to `haproxy.cfg.pre-notification-hub.<timestamp>` before being replaced, with a warning telling you to merge anything it routed into the template. |
 | **Ports** | `05-preflight.sh` refuses to install if anything already holds a port the stack wants, naming the process. Every internal port is configurable in `hub.env`. |
 | **HAProxy's log** | If the haproxy package already ships an rsyslog rule or logrotate entry for `/var/log/haproxy.log`, those are used as-is rather than a competing one being installed. |
-| **:443** | Shared by SNI. Passthrough domains reach their own backends untouched; only this project's four domains are TLS-terminated. The routing table is untracked and lives on the host — see [tls-passthrough.md](tls-passthrough.md). |
+| **:443** | Shared by SNI. Passthrough domains reach their own backends untouched; only this project's own domains are TLS-terminated. The routing table is untracked and lives on the host — see [tls-passthrough.md](tls-passthrough.md). |
 | **:80** | Stays owned by HAProxy permanently — certbot issues and renews on `ACME_HTTP_PORT` behind it (`/etc/letsencrypt/cli.ini`, each lineage's renewal config, `issue-cert.sh`), so certificates never stop the proxy and never interrupt other services. |
 
 ## Credential handling

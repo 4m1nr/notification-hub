@@ -40,6 +40,8 @@ check_port "${NTFY_PORT:-2586}"     ntfy           NTFY_PORT
 check_port "${MINIFLUX_PORT:-8080}" miniflux       MINIFLUX_PORT
 check_port "${CD_PORT:-5000}"       changedetection CD_PORT
 check_port "${HC_PORT:-8000}"       healthchecks   HC_PORT
+check_port "${CWA_PORT:-8083}"      cwa            CWA_PORT
+check_port "${SHELFMARK_PORT:-8084}" shelfmark     SHELFMARK_PORT
 check_port "${RSS_RELAY_LISTEN##*:}" rss-relay     RSS_RELAY_LISTEN
 check_port "${SYSLOG_TLS_PORT:-6514}" rsyslog      SYSLOG_TLS_PORT
 check_port "${ACME_HTTP_PORT:-8402}" certbot       ACME_HTTP_PORT
@@ -70,6 +72,17 @@ while read -r target; do
     warn "  ${target} has nothing listening — the domain routed to it will fail"
   fi
 done < <(grep -oE 'server srv[0-9]+ 127\.0\.0\.1:[0-9]+' "$REPO_ROOT/vps/haproxy/haproxy.cfg.tmpl" | awk '{print $3}')
+
+# Shelfmark's bundled Chromium (the Cloudflare bypass) is capped at 2 GB, on top
+# of everything else here. Not fatal: a smaller box works until a download
+# needs the browser, then the OOM killer picks something.
+log "checking memory"
+mem_kb="$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)"
+if (( mem_kb < 3 * 1024 * 1024 )); then
+  warn "  only $((mem_kb / 1024)) MB RAM — Shelfmark's browser alone may use up to 2 GB"
+else
+  log "  $((mem_kb / 1024)) MB RAM"
+fi
 
 log "checking for conflicting package state"
 for unit in ntfy miniflux; do

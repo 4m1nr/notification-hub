@@ -89,7 +89,7 @@ mkdir -p "$BACKUP_DIR"
 chmod 0700 "$BACKUP_DIR"
 STAGE="$(mktemp -d)"
 chmod 0700 "$STAGE"
-mkdir -p "$STAGE/postgres" "$STAGE/config" "$STAGE/changedetection"
+mkdir -p "$STAGE/postgres" "$STAGE/config" "$STAGE/changedetection" "$STAGE/books"
 
 #--- Databases ---------------------------------------------------------------
 # All three services share one PostgreSQL instance, so this is three dumps and
@@ -117,6 +117,44 @@ if docker compose -f "$COMPOSE_FILE" ps --status running --services 2>/dev/null 
   log "changedetection resumed"
 else
   cp -a /var/lib/changedetection/. "$STAGE/changedetection/" 2>/dev/null || true
+fi
+
+#--- Books -------------------------------------------------------------------
+# Calibre-Web-Automated and Shelfmark keep their state in SQLite, not the shared
+# PostgreSQL (see docker-compose.yml for why). sqlite3 .backup takes a
+# consistent copy through SQLite's own locking while both keep running, so
+# unlike changedetection nothing is stopped.
+#
+# The book files themselves are NOT included: a library quickly outgrows a
+# daily upload in 45 MB parts. metadata.db is what holds the cataloguing work
+# (titles, series, tags, shelves); the files can be re-fetched or copied off
+# with rsync. See docs/books.md.
+STEP="books databases"
+BOOKS_ROOT="${BOOKS_ROOT:-/var/lib/books}"
+snapshot_sqlite() {
+  local src="$1" dest="$2"
+  [[ -f "$src" ]] || return 0
+  mkdir -p "$(dirname "$dest")"
+  sqlite3 "$src" ".backup '$dest'"
+  log "  $(basename "$src"): $(stat -c%s "$dest") bytes"
+}
+if [[ -d "$BOOKS_ROOT" ]]; then
+  require sqlite3
+  STEP="books databases"
+  log "snapshotting book databases"
+  snapshot_sqlite "$BOOKS_ROOT/library/metadata.db" "$STAGE/books/library/metadata.db"
+  snapshot_sqlite "$BOOKS_ROOT/cwa-config/app.db"   "$STAGE/books/cwa-config/app.db"
+  # Shelfmark's config is small apart from its cache; its databases go through
+  # .backup, everything else is copied as-is.
+  if [[ -d "$BOOKS_ROOT/shelfmark-config" ]]; then
+    while IFS= read -r -d '' db; do
+      snapshot_sqlite "$db" "$STAGE/books/shelfmark-config/${db#"$BOOKS_ROOT/shelfmark-config/"}"
+    done < <(find "$BOOKS_ROOT/shelfmark-config" -path '*/cache' -prune -o -type f -name '*.db' -print0)
+    mkdir -p "$STAGE/books/shelfmark-config"
+    tar -C "$BOOKS_ROOT/shelfmark-config" -cf - \
+        --exclude=./cache --exclude='*.db' --exclude='*.db-wal' --exclude='*.db-shm' . \
+      | tar -C "$STAGE/books/shelfmark-config" -xf -
+  fi
 fi
 
 #--- Configuration -----------------------------------------------------------
@@ -166,8 +204,12 @@ contents:
   postgres/miniflux.dump     miniflux: feeds, categories, read state (pg_dump -Fc)
   postgres/healthchecks.dump healthchecks: check definitions and ping URLs (pg_dump -Fc)
   changedetection/           changedetection.io JSON datastore and history
+  books/library/metadata.db  Calibre library catalogue (sqlite3 .backup; no book files)
+  books/cwa-config/app.db    Calibre-Web-Automated users, shelves, Kobo/OPDS state
+  books/shelfmark-config/    Shelfmark settings and databases, cache excluded
   config/                    service configuration, systemd units, cert scripts
 
+NOT included: book files (copy /var/lib/books/library off-box yourself).
 NOT included: TLS private keys. Re-issue them with certbot after a restore.
 See docs/backup-restore.md for the restore procedure.
 EOF
